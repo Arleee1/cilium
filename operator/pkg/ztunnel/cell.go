@@ -15,7 +15,8 @@ import (
 	"github.com/cilium/cilium/pkg/ztunnel/table"
 )
 
-// Cell manages SPIRE enrollment for namespaces when ztunnel encryption is enabled.
+// Cell manages SPIRE enrollment for namespaces when ztunnel encryption is enabled
+// and provides ztunnel configuration.
 var Cell = cell.Module(
 	"ztunnel",
 	"ZTunnel SPIRE Enrollment",
