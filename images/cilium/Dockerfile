@@ -8,8 +8,8 @@
 ## required openssl libs from mcr.microsoft.com/azurelinux/distroless/base usage.
 ARG MARINER_DISTROLESS=mcr.microsoft.com/azurelinux/distroless/base:3.0
 
-ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:d5ee2d9e75f058ba72f0f49cfd5f549d41daf937@sha256:80de7c885f75d2b5c0b08e0b49835ad5534205e17c7e142fc1b58c92a4bd6be1
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:13d977310952166f52eff5b7879922bf68ea2b19@sha256:66d3bcd13698df8f7987c97793f92248f481b41a43afa5868fa836bd926e8490
+ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:c0e68de3cac21f2c60fc9c9b9a6d77ccab2dc56f@sha256:e225f505cc851f039b70ac7ed8815a15fb598c0da17a4b6eb47851beb559ef91
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:7b388e31c993adaf8a6e47bfb6c4a0246d296422@sha256:ad98b28bcebae8d2fc3f726bb3c92892fbad9a9e1ef8cbd60b4c3cebff882c87
 #
 # cilium-envoy from github.com/cilium/proxy
 #
