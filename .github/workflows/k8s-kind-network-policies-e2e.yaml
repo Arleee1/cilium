@@ -7,12 +7,19 @@ on:
       PR-number:
         description: "Pull request number."
         required: true
+      UID:
+        description: "A second number, to differentiate multiple runs of the same workflow by the same PR"
+        required: false
+        default: 1
       context-ref:
         description: "Context in which the workflow runs. If PR is from a fork, will be the PR target branch (general case). If PR is NOT from a fork, will be the PR branch itself (this allows committers to test changes to workflows directly from PRs)."
         required: true
       SHA:
         description: "SHA under test (head of the PR branch)."
         required: true
+      base-SHA:
+        description: "SHA of the base branch (target branch of the PR)."
+        required: false
       extra-args:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
@@ -37,14 +44,16 @@ on:
     - cron: '0 4/8 * * *'
 
 permissions:
-  ### ACN CHANGE ###
-  # Need statuses to report back to PR
-  # Need actions:read to download artifacts from other workflow runs
-  id-token: write
+  # To read actions state with cilium/workflow-telemetry-action
   actions: read
+  # To be able to access the repository with actions/checkout
   contents: read
+  # To allow retrieving information from the PR API
   pull-requests: read
+  # To be able to set commit status
   statuses: write
+  # To be able to request the JWT from GitHub's OIDC provider
+  id-token: write
 
 concurrency:
   group: |
@@ -52,7 +61,7 @@ concurrency:
     ${{ github.event_name }}
     ${{
       (github.event_name == 'push' && github.sha) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+      (github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.event.inputs.PR-number, github.event.inputs.UID || '1')) ||
       (github.event_name == 'pull_request' && github.event.number)
     }}
   cancel-in-progress: true
@@ -76,21 +85,31 @@ jobs:
           echo "${{ github.event_name }}"
           echo "${{
             (github.event_name == 'push' && github.sha) ||
-            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+            (github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.event.inputs.PR-number, github.event.inputs.UID || '1')) ||
             (github.event_name == 'pull_request' && github.event.number)
           }}"
           echo "Full concurrency group: ${{ github.workflow }}-${{ github.event_name }}-${{
             (github.event_name == 'push' && github.sha) ||
-            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+            (github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.event.inputs.PR-number, github.event.inputs.UID || '1')) ||
             (github.event_name == 'pull_request' && github.event.number)
           }}"
+
+  commit-status-start:
+    name: Commit Status Start
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set initial commit status
+        uses: cilium/cilium/.github/actions/set-commit-status@main
+        with:
+          sha: ${{ inputs.SHA || github.sha }}
 
   ### Separate job for external (AKS) clusters ###
   kubernetes-e2e-net-external:
     env:
       job_name: "Test on External Cluster"
       KUBECONFIG: ${{ github.workspace }}/kubeconfig
-    if: ${{ inputs.run-id != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run-id != '' }}
     runs-on: ubuntu-latest
     name: Test on External Cluster
     steps:
@@ -187,10 +206,11 @@ jobs:
         with:
           comment_on_pr: false
 
-      - name: Checkout code
+      - name: Checkout code (trusted)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          ref: ${{ inputs.context-ref || github.event.repository.default_branch || github.ref }}
 
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
@@ -270,7 +290,8 @@ jobs:
         id: default_vars
         uses: ./.github/actions/helm-default
         with:
-          image-tag: ${{ github.event.pull_request.head.sha || github.sha }}
+          image-tag: ${{ inputs.SHA || github.event.pull_request.head.sha || github.sha }}
+          chart-dir: ./untrusted/install/kubernetes/cilium
 
       - name: Set up job variables
         id: vars
@@ -301,6 +322,18 @@ jobs:
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
             until docker manifest inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
+
+      # Warning: since this is a privileged workflow, subsequent workflow job
+      # steps must take care not to execute untrusted code.
+      - name: Checkout pull request branch (NOT TRUSTED)
+        if: ${{ github.event_name != 'push' && github.event_name != 'schedule' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ steps.vars.outputs.sha }}
+          persist-credentials: false
+          path: untrusted
+          sparse-checkout: |
+            install/kubernetes/cilium
 
       - name: Install Cilium
         id: install-cilium
@@ -409,3 +442,16 @@ jobs:
               description: description,
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
+
+  merge-upload-and-status:
+    name: Merge Upload and Status
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs:
+      - kubernetes-e2e-net
+      - kubernetes-e2e-net-external
+    uses: ./.github/workflows/common-post-jobs.yaml
+    secrets: inherit
+    with:
+      context-ref: ${{ inputs.context-ref || github.sha }}
+      sha: ${{ inputs.SHA || github.sha }}
+      success: ${{ needs.kubernetes-e2e-net.result == 'success' && (needs.kubernetes-e2e-net-external.result == 'success' || needs.kubernetes-e2e-net-external.result == 'skipped') }}
