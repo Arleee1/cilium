@@ -33,6 +33,7 @@ import (
 	"github.com/cilium/cilium/pkg/policy/types"
 	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/u8proto"
+	sdpmetrics "github.com/cilium/cilium/standalone-dns-proxy/pkg/metrics"
 
 	pb "github.com/cilium/cilium/api/v1/standalone-dns-proxy"
 )
@@ -234,6 +235,9 @@ type GRPCClient struct {
 
 	// grpc client connection to the Cilium agent
 	client *grpc.ClientConn
+
+	// metrics tracks errors for the standalone DNS proxy gRPC client
+	metrics *sdpmetrics.Metrics
 }
 
 // createGRPCClient creates a new gRPC connection handler client for standalone DNS proxy
@@ -247,6 +251,7 @@ func createGRPCClient(params clientParams) *GRPCClient {
 		dnsRulesTable:         params.DNSRulesTable,
 		ipToEndpointTable:     params.IPtoEndpointTable,
 		prefixToIdentityTable: params.PrefixToIdentityTable,
+		metrics:               params.Metrics,
 	}
 }
 
@@ -259,6 +264,7 @@ func (c *GRPCClient) InitClient() error {
 	)
 	if err != nil {
 		c.logger.Error("Client creation failed", logfields.Error, err)
+		c.metrics.CiliumAgentConnection.WithLabelValues(sdpmetrics.LabelErrorClientCreation).Inc()
 		return err
 	}
 
@@ -279,6 +285,7 @@ func (c *GRPCClient) createPolicyStream(ctx context.Context) error {
 		stream, err := fqdnClient.StreamPolicyState(context.Background())
 		if err != nil {
 			c.logger.Error("Failed to open policy stream", logfields.Error, err)
+			c.metrics.CiliumAgentConnection.WithLabelValues(sdpmetrics.LabelErrorOpenPolicyStream).Inc()
 			return err
 		}
 		defer stream.CloseSend()
@@ -289,6 +296,7 @@ func (c *GRPCClient) createPolicyStream(ctx context.Context) error {
 			state, err := stream.Recv()
 			if err != nil {
 				c.logger.Error("Policy stream recv failed", logfields.Error, err)
+				c.metrics.RetrieveDNSRules.WithLabelValues(sdpmetrics.LabelErrorPolicyStreamRecv).Inc()
 				return err
 			}
 			response := &pb.PolicyStateResponse{
@@ -302,6 +310,7 @@ func (c *GRPCClient) createPolicyStream(ctx context.Context) error {
 			}
 			if sendErr := stream.Send(response); sendErr != nil {
 				c.logger.Error("Policy stream ACK send failed", logfields.Error, sendErr)
+				c.metrics.RetrieveDNSRules.WithLabelValues(sdpmetrics.LabelErrorPolicyStreamSend).Inc()
 				return sendErr
 			}
 			c.connected.Store(true)
@@ -335,10 +344,14 @@ func (c *GRPCClient) NotifyOnMsg(msg *pb.FQDNMapping) error {
 	client := pb.NewFQDNDataClient(c.client)
 
 	_, err := client.UpdateMappingRequest(context.Background(), msg)
-	if err != nil && isConnectionError(err) {
-		c.logger.Error("Connection error during UpdateMappingRequest", logfields.Error, err)
-		// Return nil as standalone dns proxy can still continue to handle the DNS requests
-		return nil
+	if err != nil {
+		if isConnectionError(err) {
+			c.logger.Error("Connection error during UpdateMappingRequest", logfields.Error, err)
+			c.metrics.FQDNMappingSync.WithLabelValues(sdpmetrics.LabelErrorMappingSyncConnection).Inc()
+			// Return nil as standalone dns proxy can still continue to handle the DNS requests
+			return nil
+		}
+		c.metrics.FQDNMappingSync.WithLabelValues(sdpmetrics.LabelErrorMappingSyncRequest).Inc()
 	}
 	return err
 }
