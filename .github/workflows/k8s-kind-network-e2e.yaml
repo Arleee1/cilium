@@ -21,6 +21,7 @@ on:
         description: "Run ID of the workflow that uploaded the kubeconfig artifact"
         required: false
         default: ''
+  pull_request: {}
   push:
     branches:
       - v1.19
@@ -35,7 +36,6 @@ permissions:
   contents: read
   pull-requests: read
   statuses: write
-
 
 concurrency:
   group: |
@@ -318,7 +318,7 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
+            until docker manifest inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Install Cilium
@@ -384,7 +384,7 @@ jobs:
           # Run tests
           export KUBERNETES_CONFORMANCE_TEST='y'
           export E2E_REPORT_DIR=${PWD}/_artifacts
-          /usr/local/bin/ginkgo --nodes=5                \
+          /usr/local/bin/ginkgo --nodes=25                \
             --focus="\[sig-network\]"     \
             --skip="${SKIP_FLAG}"   \
             /usr/local/bin/e2e.test                       \

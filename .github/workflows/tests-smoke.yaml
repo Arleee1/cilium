@@ -21,6 +21,7 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
+  pull_request: {}
   push:
     branches:
       - v1.19
@@ -45,7 +46,8 @@ concurrency:
     ${{
       (github.event_name == 'push' && github.sha) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
-      (github.event_name == 'pull_request' && github.event.number)
+      (github.event_name == 'pull_request' && github.event.number) ||
+      (github.event_name == 'merge_group' && github.run_id)
     }}
   cancel-in-progress: ${{ !github.event.merge_group }}
 
@@ -73,12 +75,14 @@ jobs:
           echo "${{
             (github.event_name == 'push' && github.sha) ||
             (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
-            (github.event_name == 'pull_request' && github.event.number)
+            (github.event_name == 'pull_request' && github.event.number) ||
+            (github.event_name == 'merge_group' && github.run_id)
           }}"
           echo "Full concurrency group: ${{ github.workflow }}-${{ github.event_name }}-${{
             (github.event_name == 'push' && github.sha) ||
             (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
-            (github.event_name == 'pull_request' && github.event.number)
+            (github.event_name == 'pull_request' && github.event.number) ||
+            (github.event_name == 'merge_group' && github.run_id)
           }}"
 
   check_changes:
@@ -260,7 +264,7 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
+            until docker manifest inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Generate CA, Server and Client certs for Operator Prometheus
