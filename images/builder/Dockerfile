@@ -3,6 +3,10 @@
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
+# For msft-go1.26
+# Should be phased out in 1.27+ when CGO_ENABLED dynamically sets openssl cgo usage
+ARG GOEXPERIMENT=""
+
 ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:1770907749-ed0b9a5@sha256:672c3883596bbf9f8d0d5609f2ffa8e994cb42641859b71902c8b76a68b9a11a
 ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:aabf6e2eb63867096b5e8b91a19e2dac76b95000@sha256:a415228c76496553dd3d2c4576615859274ef648b5416c3bddc09fb8f2416469
 ARG TESTER_IMAGE=quay.io/cilium/image-tester:1770906593-bc584f9@sha256:f8368922907632e3cd89b4167b9fee43d9ab9ae1e19a74f5604953f6698a0396
@@ -16,6 +20,8 @@ FROM ${GOLANG_IMAGE} AS golang-dist
 FROM ${CILIUM_LLVM_IMAGE} AS llvm-dist
 
 FROM ${CILIUM_RUNTIME_IMAGE} AS rootfs
+ARG GOEXPERIMENT
+ENV GOEXPERIMENT=${GOEXPERIMENT}
 
 # Change the number to force the generation of a new git-tree SHA. Useful when
 # we want to re-run 'apt-get upgrade' for stale images.

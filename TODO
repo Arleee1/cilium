@@ -1,0 +1,27 @@
+# TODO
+
+## Distroless image tagging (from v1.18 / PR 905)
+
+When distroless support is added to this branch, port the following changes
+from `jpayne3506/v1.18-1.26Build` (PR #905):
+
+1. **images/Makefile.acn** – Add distroless variables with build-arg hash suffix:
+   - `ACN_DISTROLESS_RUNTIME_IMAGE_TAG` and `ACN_DISTROLESS_BUILDER_IMAGE_TAG`
+     must include a sha256 hash of `DOCKER_BUILD_ARGS` (and for the builder,
+     the distroless runtime image reference) so that build-arg changes produce
+     new tags.
+   - Add `IMAGE_TAG=` passthrough to `acn-distroless-runtime-image` and
+     `acn-distroless-builder-image` targets.
+   - Add print helper targets: `print-acn-distroless-runtime-tag`,
+     `print-acn-distroless-builder-tag`, `print-acn-distroless-runtime-image`,
+     `print-acn-distroless-builder-image`.
+
+2. **`.github/workflows/build-images-ci-acn.yaml`** – Use Makefile.acn print
+   targets for distroless image references instead of raw `git ls-tree` or
+   `make-image-tag.sh` calls.
+
+3. **`.pipelines/ob/ob-pipeline.yaml`** (PR #903, branch `jpayne/1.26-build`) –
+   Distroless tag check and variable setting already use Makefile.acn print
+   targets; verify compatibility when distroless is added here.
+
+Reference commit on v1.18: 11b79d5d8f

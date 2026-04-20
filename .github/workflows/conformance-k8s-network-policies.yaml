@@ -8,7 +8,10 @@ on:
     paths-ignore:
       - 'Documentation/**'
 
-permissions: read-all
+permissions:
+  contents: read
+  # For Azure OIDC authentication to pull test images from ACR
+  id-token: write
 
 env:
   KIND_CONFIG: .github/kind-config.yaml
@@ -77,6 +80,16 @@ jobs:
           else
             echo tag=${{ github.sha }} >> $GITHUB_OUTPUT
           fi
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_BUILD_SUBSCRIPTION_ID }}
+
+      - name: acr login
+        run: |
+          az acr login -n acnpublic.azurecr.io
 
       - name: Wait for images to be available
         timeout-minutes: 30

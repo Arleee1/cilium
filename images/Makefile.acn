@@ -1,0 +1,103 @@
+# Copyright Authors of Cilium
+# SPDX-License-Identifier: Apache-2.0
+
+# acn-specific Makefile extension for the images directory.
+#
+# Usage:
+#   make -f Makefile.acn <target>
+#
+# This Makefile includes the upstream Makefile (all existing targets remain
+# available) and adds:
+#   - DOCKER_BUILD_ARGS: pass arbitrary --build-arg flags to docker buildx.
+#   - ACN_REGISTRIES: override the target registries for acn builds.
+#   - acn-* targets that mirror the upstream image targets but route through
+#     scripts/acn-build-image.sh so DOCKER_BUILD_ARGS are forwarded.
+#
+# Example — build cilium with a custom build arg:
+#   make -f Makefile.acn acn-cilium-image DOCKER_BUILD_ARGS="MY_FLAG=1"
+#
+# Example — override registries and push:
+#   make -f Makefile.acn acn-cilium-image \
+#     ACN_REGISTRIES="acnpublic.azurecr.io/cilium" PUSH=true
+
+# Pull in all upstream variables and targets.
+include Makefile
+
+# ---- acn-specific variables ------------------------------------------------
+
+# ACN Golang image (MCR-hosted Microsoft Go fork).
+GOLANG_IMAGE ?= mcr.microsoft.com/oss/go/microsoft/golang:1.26.2-1@sha256:24d0b15c59a25b32e382a52eaf2ac6f2262540753cd9cc541037de24f733d72b
+export GOLANG_IMAGE
+
+
+# Space-separated KEY=VALUE pairs forwarded as --build-arg to docker buildx.
+# Example: DOCKER_BUILD_ARGS=HTTP_PROXY=http://proxy:8080 CUSTOM_FLAG=1
+DOCKER_BUILD_ARGS ?= GOEXPERIMENT=ms_nocgo_opensslcrypto GOLANG_IMAGE=$(GOLANG_IMAGE)
+export DOCKER_BUILD_ARGS
+
+# Registries used by acn-* targets.  Defaults to the upstream REGISTRIES.
+ACN_REGISTRIES ?= $(REGISTRIES)
+
+# Compute the runtime image tag (git tree hash of images/runtime) combined with
+# a fingerprint of build-arg inputs.  This ensures changes to DOCKER_BUILD_ARGS
+# (e.g. GOLANG_IMAGE, BASE_IMAGE, GOEXPERIMENT) produce a distinct tag instead
+# of reusing a stale image already present in the registry.
+ACN_RUNTIME_IMAGE_INPUT_HASH := $(shell printf '%s\n' "$(DOCKER_BUILD_ARGS)" | sha256sum | cut -c1-12)
+ACN_RUNTIME_IMAGE_TAG := $(shell scripts/make-image-tag.sh images/runtime)-$(ACN_RUNTIME_IMAGE_INPUT_HASH)
+ACN_RUNTIME_IMAGE_NAME := cilium-runtime
+# First word of ACN_REGISTRIES is used as the base for image references.
+ACN_RUNTIME_IMAGE := $(firstword $(ACN_REGISTRIES))/$(ACN_RUNTIME_IMAGE_NAME):$(ACN_RUNTIME_IMAGE_TAG)
+
+# Compute the builder image tag.  The builder depends on the runtime image, so
+# include that in the hash to ensure tag changes cascade correctly.
+ACN_BUILDER_IMAGE_INPUT_HASH := $(shell printf '%s\n%s\n' "$(DOCKER_BUILD_ARGS)" "$(ACN_RUNTIME_IMAGE)" | sha256sum | cut -c1-12)
+ACN_BUILDER_IMAGE_TAG := $(shell scripts/make-image-tag.sh images/builder)-$(ACN_BUILDER_IMAGE_INPUT_HASH)
+ACN_BUILDER_IMAGE_NAME := cilium-builder
+ACN_BUILDER_IMAGE := $(firstword $(ACN_REGISTRIES))/$(ACN_BUILDER_IMAGE_NAME):$(ACN_BUILDER_IMAGE_TAG)
+
+# ---- acn image targets -----------------------------------------------------
+#
+# These targets use scripts/acn-build-image.sh, which follows the same
+# interface as scripts/build-image.sh but additionally forwards
+# DOCKER_BUILD_ARGS as --build-arg flags.
+#
+# To add a new acn-specific image, follow the pattern:
+#
+#   my-acn-image: .buildx_builder
+#   	ROOT_CONTEXT=true scripts/acn-build-image.sh my-image-dev images/my-image \
+#   		$(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+#
+
+acn-all-images: acn-runtime-image acn-builder-image acn-cilium-image acn-operator-image acn-hubble-relay-image
+
+acn-runtime-image: .buildx_builder
+	IMAGE_TAG=$(ACN_RUNTIME_IMAGE_TAG) DOCKER_BUILD_TARGET="" scripts/acn-build-image.sh cilium-runtime images/runtime $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+acn-builder-image: .buildx_builder
+	IMAGE_TAG=$(ACN_BUILDER_IMAGE_TAG) DOCKER_BUILD_ARGS="$(DOCKER_BUILD_ARGS) CILIUM_RUNTIME_IMAGE=$(ACN_RUNTIME_IMAGE)" scripts/acn-build-image.sh cilium-builder images/builder $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+acn-cilium-image: .buildx_builder
+	DOCKER_BUILD_ARGS="$(DOCKER_BUILD_ARGS) CILIUM_BUILDER_IMAGE=$(ACN_BUILDER_IMAGE) CILIUM_RUNTIME_IMAGE=$(ACN_RUNTIME_IMAGE)" ROOT_CONTEXT=true scripts/acn-build-image.sh cilium-dev images/cilium $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+acn-operator-image: .buildx_builder
+	DOCKER_BUILD_ARGS="$(DOCKER_BUILD_ARGS) CILIUM_BUILDER_IMAGE=$(ACN_BUILDER_IMAGE)" ROOT_CONTEXT=true scripts/acn-build-image.sh operator-dev images/operator $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+acn-hubble-relay-image: .buildx_builder
+	DOCKER_BUILD_ARGS="$(DOCKER_BUILD_ARGS) CILIUM_BUILDER_IMAGE=$(ACN_BUILDER_IMAGE)" ROOT_CONTEXT=true scripts/acn-build-image.sh hubble-relay-dev images/hubble-relay $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+# ---- print helpers ----------------------------------------------------------
+# Use these targets to query computed ACN image tags/references from scripts or
+# CI pipelines:
+#   make -C images -f Makefile.acn --no-print-directory print-acn-runtime-tag
+
+print-acn-runtime-tag:
+	@echo $(ACN_RUNTIME_IMAGE_TAG)
+
+print-acn-builder-tag:
+	@echo $(ACN_BUILDER_IMAGE_TAG)
+
+print-acn-runtime-image:
+	@echo $(ACN_RUNTIME_IMAGE)
+
+print-acn-builder-image:
+	@echo $(ACN_BUILDER_IMAGE)

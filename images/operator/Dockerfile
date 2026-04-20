@@ -63,13 +63,16 @@ RUN for f in $(find /tmp/debug -type f -name '*.debug' -not -name 'debug-wrapper
 FROM --platform=${BUILDPLATFORM} ${ALPINE_IMAGE} AS certs
 RUN apk --update add ca-certificates
 
-FROM ${GOLANG_IMAGE} AS gops
+# Until we have a native arm64 agent to build this breaks in QEMU
+FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS gops
+# TARGETARCH is an automatic platform ARG enabled by Docker BuildKit.
+ARG TARGETARCH
 
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium \
     --mount=type=cache,target=/root/.cache \
     --mount=type=cache,target=/go/pkg \
-    ./build-gops.sh
+    GOARCH=${TARGETARCH} ./build-gops.sh
 
 FROM ${BASE_IMAGE} AS release
 # TARGETOS is an automatic platform ARG enabled by Docker BuildKit.

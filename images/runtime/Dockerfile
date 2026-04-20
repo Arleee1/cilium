@@ -3,6 +3,10 @@
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
+# For msft-go1.26
+# Should be phased out in 1.27+ when CGO_ENABLED dynamically sets openssl cgo usage
+ARG GOEXPERIMENT=""
+
 ARG GOLANG_IMAGE=docker.io/library/golang:1.25.8@sha256:779b230b2508037a8095c9e2d223a6405f8426e12233b694dbae50197b9f6d04
 ARG UBUNTU_IMAGE=docker.io/library/ubuntu:24.04@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
 
@@ -15,6 +19,8 @@ FROM ${CILIUM_BPFTOOL_IMAGE} AS bpftool-dist
 FROM ${CILIUM_IPTABLES_IMAGE} AS iptables-dist
 
 FROM ${GOLANG_IMAGE} AS go-builder
+ARG GOEXPERIMENT
+ENV GOEXPERIMENT=${GOEXPERIMENT}
 
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime \
