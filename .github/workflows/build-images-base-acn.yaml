@@ -20,7 +20,6 @@ on:
       - images/Makefile.acn
       - images/scripts/acn-build-image.sh
   schedule:
-    # Every Sunday at midnight UTC to ensure base images are present for the week.
     - cron: '0 0 * * 0'
   workflow_dispatch:
 
