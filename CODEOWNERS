@@ -231,28 +231,45 @@
 # The following filepaths should be sorted so that more specific paths occur
 # after the less specific paths, otherwise the ownership for the specific paths
 # is not properly picked up in Github.
-* @cilium/committers
-/.github/ariane-config.yaml @cilium/github-sec @cilium/ci-structure
-/.github/workflows/auto-approve.yaml @cilium/cilium-maintainers
-/.github/workflows/*perf*.yaml @cilium/sig-scalability @cilium/github-sec @cilium/ci-structure
-/.github/workflows/ @cilium/github-sec @cilium/ci-structure
-/.github/actions/ @cilium/github-sec @cilium/ci-structure
-/api/ @cilium/api
-/api/v1/Makefile @cilium/sig-hubble-api
-/api/v1/Makefile.protoc @cilium/sig-hubble-api
-/api/v1/flow/ @cilium/sig-hubble-api
-/api/v1/health/ @cilium/api @cilium/sig-agent
-/api/v1/observer/ @cilium/sig-hubble-api
-/api/v1/operator/ @cilium/api @cilium/operator
-/api/v1/peer/ @cilium/sig-hubble-api
-/api/v1/recorder/ @cilium/sig-hubble-api
-/api/v1/relay/ @cilium/sig-hubble-api
-/images/builder/install-protoc.sh @cilium/sig-hubble-api
-/images/builder/install-protoplugins.sh @cilium/sig-hubble-api
-/images/builder/update-cilium-builder-image.sh @cilium/github-sec
-/images/runtime/update-cilium-runtime-image.sh @cilium/github-sec
-/pkg/byteorder/ @cilium/sig-datapath @cilium/api
-/pkg/client @cilium/api
-/pkg/hubble/metrics @cilium/hubble-metrics
-/pkg/util/ @cilium/sig-datapath
-/pkg/wireguard @cilium/wireguard
+
+
+### ACN Override of upstream CODEOWNERS
+# * @cilium/committers
+# /.github/ariane-config.yaml @cilium/github-sec @cilium/ci-structure
+# /.github/workflows/auto-approve.yaml @cilium/cilium-maintainers
+# /.github/workflows/*perf*.yaml @cilium/sig-scalability @cilium/github-sec @cilium/ci-structure
+# /.github/workflows/ @cilium/github-sec @cilium/ci-structure
+# /.github/actions/ @cilium/github-sec @cilium/ci-structure
+# /api/ @cilium/api
+# /api/v1/Makefile @cilium/sig-hubble-api
+# /api/v1/Makefile.protoc @cilium/sig-hubble-api
+# /api/v1/flow/ @cilium/sig-hubble-api
+# /api/v1/health/ @cilium/api @cilium/sig-agent
+# /api/v1/observer/ @cilium/sig-hubble-api
+# /api/v1/operator/ @cilium/api @cilium/operator
+# /api/v1/peer/ @cilium/sig-hubble-api
+# /api/v1/recorder/ @cilium/sig-hubble-api
+# /api/v1/relay/ @cilium/sig-hubble-api
+# /images/builder/install-protoc.sh @cilium/sig-hubble-api
+# /images/builder/install-protoplugins.sh @cilium/sig-hubble-api
+# /images/builder/update-cilium-builder-image.sh @cilium/github-sec
+# /images/runtime/update-cilium-runtime-image.sh @cilium/github-sec
+# /pkg/byteorder/ @cilium/sig-datapath @cilium/api
+# /pkg/client @cilium/api
+# /pkg/hubble/metrics @cilium/hubble-metrics
+# /pkg/util/ @cilium/sig-datapath
+# /pkg/wireguard @cilium/wireguard
+
+# Global catch all
+* @azure-networking/ciliummaintain
+/.github/ @azure-networking/caggart
+# Replace with Leads for source code changes
+/pkg/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/api/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/bpf/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/clustermesh-apiserver/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/daemon/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/dnsproxy/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/hubble/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/hubble-relay/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
+/operator/ @tamanoha_microsoft @vmalla_microsoft @achevuru_microsoft @neaggarw_microsoft
