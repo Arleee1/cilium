@@ -577,6 +577,8 @@ help: ## Display help for the Makefile, from https://www.thapaliya.com/en/writin
 	$(call print_help_line,"dev-docker-operator-*-image-debug","Build platform specific cilium-operator debug images(alibabacloud, aws, azure, generic)")
 	$(call print_help_line,"docker-*-image-unstripped","Build unstripped version of above docker images(cilium, hubble-relay, operator etc.)")
 	$(call print_help_line,"docker-standalone-dns-proxy-image","Build standalone DNS proxy docker image")
+	$(call print_help_line,"docker-cilium-image-distroless","Build cilium-distroless-agent docker image")
+	$(call print_help_line,"docker-cilium-image-distroless-init","Build cilium-distroless-init docker image")
 
 .PHONY: help clean clean-container dev-doctor force generate-api generate-health-api generate-operator-api generate-kvstoremesh-api generate-hubble-api generate-sdp-api install licenses-all veryclean run_bpf_tests run-builder gateway-api-conformance
 force :;

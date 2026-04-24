@@ -56,43 +56,34 @@ jobs:
             workflow-description:
               - '.github/workflows/lint-bpf-checks.yaml'
 
-  checkpatch:
-    name: Check Patch
-    runs-on: ubuntu-24.04
-    if: ${{ github.event_name == 'pull_request' }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Run checkpatch.pl
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          make -C bpf checkpatch || (echo "Run 'make -C bpf checkpatch' locally to investigate reports"; exit 1)
+  ### ACN Change ###
+  # We dont require that our PRs be signed before merge. We only want Datapath and BPF Intergration Checks to be done
+  # checkpatch:
+  #   name: Check Patch
+  #   runs-on: ubuntu-24.04
+  #   if: ${{ github.event_name == 'pull_request' }}
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  #       with:
+  #         persist-credentials: false
+  #         fetch-depth: 0
+  #     - name: Run checkpatch.pl
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       run: |
+  #         make -C bpf checkpatch || (echo "Run 'make -C bpf checkpatch' locally to investigate reports"; exit 1)
 
-  # Runs only if code under bpf/ or contrib/coccinnelle/ is changed.
-  coccicheck:
-    needs: check_changes
-    if: ${{ needs.check_changes.outputs.bpf-tree == 'true' || needs.check_changes.outputs.coccinelle == 'true' || needs.check_changes.outputs.workflow-description == 'true' }}
-    name: Run coccicheck
+  set_clang_dir:
+    name: Set clang directory
     runs-on: ubuntu-24.04
+    outputs:
+      clang_dir: ${{ steps.set_dir.outputs.clang_dir }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Run coccicheck
-        uses: docker://cilium/coccicheck:2.4@sha256:24abe3fbb8e829fa41a68a3b76cb4df84fd5a87a7d1d6254c1c1fe5effb5bd1b
-        with:
-          entrypoint: ./contrib/coccinelle/check-cocci.sh
-        # Note: Setting COCCINELLE_HOME can be removed, here and in the
-        # messages in the .cocci files, next time we upgrade coccinelle.
-        # The issue was fixed, after v1.1.1 that we're using, in
-        # https://gitlab.inria.fr/coccinelle/coccinelle/-/commit/540888ff426e.
-        env:
-          COCCINELLE_HOME: /usr/local/lib/coccinelle
 
   # Runs only if code under bpf/ is changed.
   build_all:

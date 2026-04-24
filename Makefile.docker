@@ -137,6 +137,12 @@ $(eval $(call DOCKER_IMAGE_TEMPLATE,docker-clustermesh-apiserver-image,images/cl
 # docker-standalone-dns-proxy-image
 $(eval $(call DOCKER_IMAGE_TEMPLATE,docker-standalone-dns-proxy-image,images/standalone-dns-proxy/Dockerfile,standalone-dns-proxy,$(DOCKER_IMAGE_TAG),release))
 
+# docker-cilium-image-distroless
+$(eval $(call DOCKER_IMAGE_TEMPLATE,docker-cilium-image-distroless,images/distroless/cilium/Dockerfile,cilium-distroless,$(DOCKER_IMAGE_TAG),release))
+
+# docker-cilium-image-distroless-init
+$(eval $(call DOCKER_IMAGE_TEMPLATE,docker-cilium-image-distroless-init,images/distroless/cilium-init/Dockerfile,cilium-distroless-init,$(DOCKER_IMAGE_TAG),release))
+
 # docker-operator-images.
 # We eat the ending of "operator" in to the stem ('%') to allow this pattern
 # to build also 'docker-operator-image', where the stem would be empty otherwise.

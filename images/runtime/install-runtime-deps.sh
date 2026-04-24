@@ -8,7 +8,7 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-packages=(
+ubuntuPackages=(
   # Bash completion for Cilium
   bash-completion
   # Additional misc runtime dependencies
@@ -20,16 +20,38 @@ packages=(
   libatomic1
 )
 
-export DEBIAN_FRONTEND=noninteractive
+marinerPackages=(
+  # Mariner runtime deps
+  # Specs - https://github.com/microsoft/azurelinux/tree/3.0/SPECS
 
-apt-get update
+  # min reqs,
+  ## https://docs.cilium.io/en/stable/operations/system_requirements/
+  ## https://docs.cilium.io/en/stable/reference-guides/bpf/resources/
+  jq
+  iproute
+  iptables
+  ipset
+  kmod
+  ca-certificates
+)
 
-# tzdata is one of the dependencies and a timezone must be set
-# to avoid interactive prompt when it is being installed
-ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+if [ "${1:-}" == "mariner" ]; then
+  # # Update mariner packages to the most recent versions
+  tdnf check-update -y
+  tdnf install -y "${marinerPackages[@]}"
 
-apt-get install -y --no-install-recommends "${packages[@]}"
+  tdnf clean all
+else
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
 
-apt-get purge --auto-remove
-apt-get clean
-rm -rf /var/lib/apt/lists/*
+  # tzdata is one of the dependencies and a timezone must be set
+  # to avoid interactive prompt when it is being installed
+  ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+
+  apt-get install -y --no-install-recommends "${ubuntuPackages[@]}"
+
+  apt-get purge --auto-remove
+  apt-get clean
+  rm -rf /var/lib/apt/lists/*
+fi

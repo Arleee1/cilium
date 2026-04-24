@@ -21,26 +21,81 @@ permissions:
   contents: read
   # Required to generate OIDC tokens for `sigstore/cosign-installer` authentication
   id-token: write
+  ### ACN CHANGE ###
+  # Required for gh cli to trigger other workflows
+  actions: write
+  # Required for dorny/paths-filter to list PR changed files
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after }}
   cancel-in-progress: true
 
 jobs:
+  check-base-changes:
+    name: Check for base image changes
+    runs-on: ubuntu-24.04
+    outputs:
+      base-images-changed: ${{ steps.filter.outputs.base-images }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          # Same paths as build-images-base-acn.yaml triggers
+          filters: |
+            base-images:
+              - 'images/runtime/**'
+              - 'images/builder/**'
+              - 'images/distroless/runtime/**'
+              - 'images/distroless/builder/**'
+              - 'images/Makefile.acn'
+              - 'images/scripts/acn-build-image.sh'
+
+      - name: Detect base image changes (push)
+        if: github.event_name == 'push'
+        id: filter-push
+        run: |
+          # For push events, check if the commit changed base image paths
+          changed=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- \
+            'images/runtime/' \
+            'images/builder/' \
+            'images/distroless/runtime/' \
+            'images/distroless/builder/' \
+            'images/Makefile.acn' \
+            'images/scripts/acn-build-image.sh' 2>/dev/null | head -1)
+          if [ -n "$changed" ]; then
+            echo "base-images=true" >> $GITHUB_OUTPUT
+          else
+            echo "base-images=false" >> $GITHUB_OUTPUT
+          fi
+
   setup:
     name: Setup Build Args
     runs-on: ubuntu-24.04
+    needs: check-base-changes
     outputs:
       golang-image: ${{ steps.images.outputs.golang-image }}
       alpine-image: ${{ steps.images.outputs.alpine-image }}
       cilium-builder-image: ${{ steps.images.outputs.cilium-builder-image }}
       cilium-runtime-image: ${{ steps.images.outputs.cilium-runtime-image }}
+      distroless-cilium-builder-image: ${{ steps.images.outputs.distroless-cilium-builder-image }}
+      distroless-cilium-runtime-image: ${{ steps.images.outputs.distroless-cilium-runtime-image }}
+      fips-base-image: ${{ steps.images.outputs.fips-base-image }}
       quay-organization-dev: ${{ steps.images.outputs.quay-organization-dev }}
+      base-images-changed: ${{ needs.check-base-changes.outputs.base-images-changed }}
+      modifiers: ${{ steps.images.outputs.modifiers }}
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
 
       - name: Compute image references
@@ -58,27 +113,94 @@ jobs:
           alpine_image="acnpublic.azurecr.io/alpine:${alpine_version}"
           echo "alpine-image=${alpine_image}" >> $GITHUB_OUTPUT
 
-          # Cilium builder — tree hash + build-arg fingerprint (single source of truth: Makefile.acn)
+          # FIPS base image (single source of truth: Makefile.acn)
+          fips_base_image=$(grep -m1 '^BASE_IMAGE ?=' ./images/Makefile.acn | sed 's/^BASE_IMAGE ?= *//')
+          echo "fips-base-image=${fips_base_image}" >> $GITHUB_OUTPUT
+
+          # Distroless builder/runtime (single source of truth: Makefile.acn)
+          distroless_cilium_runtime_image=$(make -C images -f Makefile.acn --no-print-directory ACN_REGISTRIES=acnpublic.azurecr.io/cilium print-acn-distroless-runtime-image)
+          echo "distroless-cilium-runtime-image=${distroless_cilium_runtime_image}" >> $GITHUB_OUTPUT
+
+          distroless_cilium_builder_image=$(make -C images -f Makefile.acn --no-print-directory ACN_REGISTRIES=acnpublic.azurecr.io/cilium print-acn-distroless-builder-image)
+          echo "distroless-cilium-builder-image=${distroless_cilium_builder_image}" >> $GITHUB_OUTPUT
+
+          # Non-distroless builder/runtime (single source of truth: Makefile.acn)
           cilium_builder_image=$(make -C images -f Makefile.acn --no-print-directory ACN_REGISTRIES=acnpublic.azurecr.io/cilium print-acn-builder-image)
           echo "cilium-builder-image=${cilium_builder_image}" >> $GITHUB_OUTPUT
 
-          # Cilium runtime — tree hash + build-arg fingerprint (single source of truth: Makefile.acn)
           cilium_runtime_image=$(make -C images -f Makefile.acn --no-print-directory ACN_REGISTRIES=acnpublic.azurecr.io/cilium print-acn-runtime-image)
           echo "cilium-runtime-image=${cilium_runtime_image}" >> $GITHUB_OUTPUT
 
           # Organization
           echo "quay-organization-dev=cilium" >> $GITHUB_OUTPUT
 
+          # Default MODIFIERS matching Makefile.docker, with GOEXPERIMENT for MCR Go.
+          echo "modifiers=GOEXPERIMENT=ms_nocgo_opensslcrypto" >> $GITHUB_OUTPUT
+
           echo "Golang image: ${golang_image}"
           echo "Alpine image: ${alpine_image}"
+          echo "FIPS base image: ${fips_base_image}"
           echo "Cilium builder image: ${cilium_builder_image}"
           echo "Cilium runtime image: ${cilium_runtime_image}"
+          echo "Distroless Cilium builder image: ${distroless_cilium_builder_image}"
+          echo "Distroless Cilium runtime image: ${distroless_cilium_runtime_image}"
+
+  wait-for-base-images:
+    name: Wait for base images in ACR
+    needs: setup
+    if: needs.setup.outputs.base-images-changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_BUILD_SUBSCRIPTION_ID }}
+
+      - name: ACR Login
+        run: az acr login -n acnpublic.azurecr.io
+
+      - name: Wait for base images to be available
+        shell: bash
+        env:
+          BUILDER: ${{ needs.setup.outputs.cilium-builder-image }}
+          RUNTIME: ${{ needs.setup.outputs.cilium-runtime-image }}
+          DISTROLESS_BUILDER: ${{ needs.setup.outputs.distroless-cilium-builder-image }}
+          DISTROLESS_RUNTIME: ${{ needs.setup.outputs.distroless-cilium-runtime-image }}
+        run: |
+          # Wait for all base images built by build-images-base-acn.yaml
+          images=("${RUNTIME}" "${BUILDER}" "${DISTROLESS_RUNTIME}" "${DISTROLESS_BUILDER}")
+
+          poll_interval=30
+          max_attempts=120  # 60 minutes at 30s intervals
+
+          for image in "${images[@]}"; do
+            echo "⏳ Waiting for image: ${image}"
+            attempt=0
+            while [[ $attempt -lt $max_attempts ]]; do
+              attempt=$((attempt + 1))
+              if docker manifest inspect "${image}" > /dev/null 2>&1; then
+                echo "✅ Image available: ${image}"
+                break
+              fi
+              if [[ $attempt -ge $max_attempts ]]; then
+                echo "❌ Timeout waiting for image: ${image}"
+                exit 1
+              fi
+              echo "  Attempt ${attempt}/${max_attempts} — not yet available, retrying in ${poll_interval}s..."
+              sleep "${poll_interval}"
+            done
+          done
+          echo "✅ All required base images are available in ACR"
 
   build-and-push-prs:
     timeout-minutes: 45
     name: Build and Push Images
     runs-on: ubuntu-24.04
-    needs: setup
+    needs: [setup, wait-for-base-images]
+    if: always() && needs.setup.result == 'success' && (needs.wait-for-base-images.result == 'success' || needs.wait-for-base-images.result == 'skipped')
     strategy:
       matrix:
         include:
@@ -94,6 +216,7 @@ jobs:
             cilium-builder-override: true
             golang-override: true
             alpine-override: true
+            fips-base-image: true
 
           - name: operator-azure
             dockerfile: ./images/operator/Dockerfile
@@ -101,6 +224,7 @@ jobs:
             cilium-builder-override: true
             golang-override: true
             alpine-override: true
+            fips-base-image: true
 
           - name: operator-alibabacloud
             dockerfile: ./images/operator/Dockerfile
@@ -108,6 +232,7 @@ jobs:
             cilium-builder-override: true
             golang-override: true
             alpine-override: true
+            fips-base-image: true
 
           - name: operator-generic
             dockerfile: ./images/operator/Dockerfile
@@ -115,20 +240,26 @@ jobs:
             cilium-builder-override: true
             golang-override: true
             alpine-override: true
+            fips-base-image: true
 
           - name: hubble-relay
             dockerfile: ./images/hubble-relay/Dockerfile
             platforms: linux/amd64,linux/arm64
             cilium-builder-override: true
             golang-override: true
+            fips-base-image: true
 
           - name: clustermesh-apiserver
             dockerfile: ./images/clustermesh-apiserver/Dockerfile
             platforms: linux/amd64,linux/arm64
+            golang-override: true
+            fips-base-image: true
 
           - name: docker-plugin
             dockerfile: ./images/cilium-docker-plugin/Dockerfile
             platforms: linux/amd64,linux/arm64
+            golang-override: true
+            fips-base-image: true
 
           # Add SDP image once in branch
 
@@ -214,10 +345,13 @@ jobs:
               echo "ALPINE_IMAGE=${{ needs.setup.outputs.alpine-image }}"
             fi
             if [[ "${{ matrix.cilium-builder-override }}" == "true" ]]; then
-              echo "CILIUM_BUILDER_IMAGE=${{ needs.setup.outputs.cilium-builder-image }}"
+              echo "CILIUM_BUILDER_IMAGE=${{ needs.setup.outputs.distroless-cilium-builder-image }}"
             fi
             if [[ "${{ matrix.cilium-runtime-override }}" == "true" ]]; then
               echo "CILIUM_RUNTIME_IMAGE=${{ needs.setup.outputs.cilium-runtime-image }}"
+            fi
+            if [[ "${{ matrix.fips-base-image }}" == "true" ]]; then
+              echo "BASE_IMAGE=${{ needs.setup.outputs.fips-base-image }}"
             fi
             echo 'EOF'
           } >> $GITHUB_OUTPUT
@@ -258,6 +392,7 @@ jobs:
           tags: ${{ steps.tag.outputs.normal_tag }}
           target: release
           build-args: |
+            MODIFIERS="${{ needs.setup.outputs.modifiers }}"
             OPERATOR_VARIANT=${{ matrix.name }}
             ${{ steps.overrides.outputs.args }}
 
@@ -275,8 +410,7 @@ jobs:
           target: release
           build-args: |
             BASE_IMAGE=${{ needs.setup.outputs.cilium-runtime-image }}
-            LOCKDEBUG=1
-            RACE=1
+            MODIFIERS="${{ needs.setup.outputs.modifiers }} LOCKDEBUG=1 RACE=1"
             OPERATOR_VARIANT=${{ matrix.name }}
             ${{ steps.overrides.outputs.args }}
 
@@ -293,7 +427,7 @@ jobs:
           tags: ${{ steps.tag.outputs.unstripped_tag }}
           target: release
           build-args: |
-            NOSTRIP=1
+            MODIFIERS="${{ needs.setup.outputs.modifiers }} NOSTRIP=1"
             OPERATOR_VARIANT=${{ matrix.name }}
             ${{ steps.overrides.outputs.args }}
 
@@ -400,3 +534,87 @@ jobs:
         run: |
           cd image-digest/
           find -type f | sort | xargs -d '\n' cat
+
+  ### ACN CHANGES ###
+  trigger-tests:
+    if: ${{ always() && needs.build-and-push-prs.result == 'success' }}
+    name: Trigger Test Workflows
+    runs-on: ubuntu-24.04
+    needs: [build-and-push-prs, image-digests]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ inputs.context-ref || github.sha }}
+          persist-credentials: false
+
+      - name: Get SHA and PR info for triggering
+        id: trigger-info
+        run: |
+          if [ "${{ github.event.pull_request.head.sha }}" != "" ]; then
+            sha=${{ github.event.pull_request.head.sha }}
+            pr_number=${{ github.event.pull_request.number }}
+            context_ref=${{ github.head_ref }}
+          else
+            sha=${{ github.sha }}
+            pr_number=""
+            context_ref=${{ github.ref }}
+          fi
+          echo sha=${sha} >> $GITHUB_OUTPUT
+          echo pr_number=${pr_number} >> $GITHUB_OUTPUT
+          echo context_ref=${context_ref} >> $GITHUB_OUTPUT
+
+      - name: Trigger Smoke Test
+        run: |
+          gh workflow run tests-smoke.yaml \
+            --ref ${{ steps.trigger-info.outputs.context_ref }} \
+            --field SHA="${{ steps.trigger-info.outputs.sha }}" \
+            --field PR-number="${{ steps.trigger-info.outputs.pr_number }}" \
+            --field context-ref="${{ steps.trigger-info.outputs.context_ref }}" \
+            --field extra-args='{"triggered_by": "acn-image-ci-build"}'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger Smoke Test with IPv6
+        run: |
+          gh workflow run tests-smoke-ipv6.yaml \
+            --ref ${{ steps.trigger-info.outputs.context_ref }} \
+            --field SHA="${{ steps.trigger-info.outputs.sha }}" \
+            --field PR-number="${{ steps.trigger-info.outputs.pr_number }}" \
+            --field context-ref="${{ steps.trigger-info.outputs.context_ref }}" \
+            --field extra-args='{"triggered_by": "acn-image-ci-build"}'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger Conformance K8s Network Policies
+        run: |
+          gh workflow run conformance-k8s-network-policies.yaml \
+            --ref ${{ steps.trigger-info.outputs.context_ref }} \
+            --field SHA="${{ steps.trigger-info.outputs.sha }}" \
+            --field PR-number="${{ steps.trigger-info.outputs.pr_number }}" \
+            --field context-ref="${{ steps.trigger-info.outputs.context_ref }}" \
+            --field extra-args='{"triggered_by": "acn-image-ci-build"}'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger K8s Network E2E tests and kube-apiserver HA
+        run: |
+          gh workflow run k8s-kind-network-e2e.yaml \
+            --ref ${{ steps.trigger-info.outputs.context_ref }} \
+            --field SHA="${{ steps.trigger-info.outputs.sha }}" \
+            --field PR-number="${{ steps.trigger-info.outputs.pr_number }}" \
+            --field context-ref="${{ steps.trigger-info.outputs.context_ref }}" \
+            --field extra-args='{"triggered_by": "acn-image-ci-build"}'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger K8s Network Policy E2E tests
+        run: |
+          gh workflow run k8s-kind-network-policies-e2e.yaml \
+            --ref ${{ steps.trigger-info.outputs.context_ref }} \
+            --field SHA="${{ steps.trigger-info.outputs.sha }}" \
+            --field PR-number="${{ steps.trigger-info.outputs.pr_number }}" \
+            --field context-ref="${{ steps.trigger-info.outputs.context_ref }}" \
+            --field extra-args='{"triggered_by": "acn-image-ci-build"}'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

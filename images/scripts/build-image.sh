@@ -36,7 +36,11 @@ registries=("${@}")
 if [ "${with_root_context}" = "false" ] ; then
   image_tag="$("${script_dir}/make-image-tag.sh" "${image_dir}")"
 else
-  image_tag="$("${script_dir}/make-image-tag.sh")"
+  if [[ "${image_name}" =~ "distroless" ]] ; then
+    image_tag="$("${script_dir}/make-image-tag.sh" "images/distroless/runtime")"
+  else
+    image_tag="$("${script_dir}/make-image-tag.sh")"
+  fi
 fi
 
 tag_args=()
@@ -100,6 +104,9 @@ run_buildx() {
     "--target=release"
     "--file=${image_dir}/Dockerfile"
   )
+  if [ -n "${GOEXPERIMENT:-}" ] ; then
+    build_args+=(--build-arg "GOEXPERIMENT=${GOEXPERIMENT}")
+  fi
   if [ "${with_root_context}" = "false" ] ; then
     build_args+=("${image_dir}")
   else

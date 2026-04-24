@@ -35,17 +35,17 @@ runs:
         CILIUM_INSTALL_DEFAULTS="--chart-directory=${{ inputs.chart-dir }} \
           --helm-set=hubble.relay.retryTimeout=5s \
           --helm-set=debug.metricsSamplingInterval=30s \
-          --helm-set=image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
+          --helm-set=image.repository=acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
           --helm-set=image.useDigest=false \
           --helm-set=image.tag=${{ inputs.image-tag }} \
-          --helm-set=operator.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
+          --helm-set=operator.image.repository=acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
           --helm-set=operator.image.suffix=-ci \
           --helm-set=operator.image.tag=${{ inputs.image-tag }} \
           --helm-set=operator.image.useDigest=false \
-          --helm-set=clustermesh.apiserver.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/clustermesh-apiserver-ci \
+          --helm-set=clustermesh.apiserver.image.repository=acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/clustermesh-apiserver-ci \
           --helm-set=clustermesh.apiserver.image.tag=${{ inputs.image-tag }} \
           --helm-set=clustermesh.apiserver.image.useDigest=false \
-          --helm-set=hubble.relay.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci \
+          --helm-set=hubble.relay.image.repository=acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci \
           --helm-set=hubble.relay.image.tag=${{ inputs.image-tag }} \
           --helm-set=hubble.relay.image.useDigest=false \
           --set-string=extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
@@ -71,7 +71,14 @@ runs:
           --set-string=hubble.relay.extraEnv[1].name=CILIUM_INVALID_METRIC_VALUE_DETECTOR \
           --set-string=hubble.relay.extraEnv[1].value=true \
           --set-string=hubble.relay.extraEnv[2].name=CILIUM_SLOG_DUP_ATTR_DETECTOR \
-          --set-string=hubble.relay.extraEnv[2].value=true"
+          --set-string=hubble.relay.extraEnv[2].value=true \
+          --set-string=hubble.relay.extraEnv[3].name=GOPS_CONFIG_DIR \
+          --set-string=hubble.relay.extraEnv[3].value=/tmp/gops"
+
+          ### ACN CHANGE ###
+          # Added below as an additional step from https://github.com/cilium/cilium/pull/40001/files
+          # --set-string=hubble.relay.extraEnv[3].name=GOPS_CONFIG_DIR \
+          # --set-string=hubble.relay.extraEnv[3].value=/tmp/gops
 
         if [ "${{ inputs.mutation-detection }}" == "true" ]; then
           CILIUM_INSTALL_DEFAULTS+="--set-string=extraEnv[3].name=KUBE_CACHE_MUTATION_DETECTOR \
@@ -80,8 +87,8 @@ runs:
             --set-string=operator.extraEnv[3].value=true \
             --set-string=clustermesh.apiserver.extraEnv[3].name=KUBE_CACHE_MUTATION_DETECTOR \
             --set-string=clustermesh.apiserver.extraEnv[3].value=true \
-            --set-string=hubble.relay.extraEnv[3].name=KUBE_CACHE_MUTATION_DETECTOR \
-            --set-string=hubble.relay.extraEnv[3].value=true"
+            --set-string=hubble.relay.extraEnv[4].name=KUBE_CACHE_MUTATION_DETECTOR \
+            --set-string=hubble.relay.extraEnv[4].value=true"
         fi
 
         if [ "${{ inputs.debug }}" == "true" ]; then

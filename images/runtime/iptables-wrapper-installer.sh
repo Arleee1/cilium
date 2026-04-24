@@ -47,6 +47,10 @@ fi
 if [ -x /usr/sbin/alternatives ]; then
     # Fedora/SUSE style alternatives
     altstyle="fedora"
+    # tdnf does not update alternatives
+    if [ -x /usr/bin/tdnf ]; then
+        altstyle="mariner"
+    fi
 elif [ -x /usr/sbin/update-alternatives ]; then
     # Debian style alternatives
     altstyle="debian"
@@ -155,26 +159,46 @@ fi
 
 EOF
 
+
 # Write out the appropriate alternatives-selection commands
 case "${altstyle}" in
     fedora)
 cat >> "${sbin}/iptables-wrapper" <<EOF
-# Update links to point to the selected binaries
+# Update fedora links to point to the selected binaries
 alternatives --set iptables "/usr/sbin/iptables-\${mode}" > /dev/null || failed=1
 EOF
     ;;
 
     debian)
 cat >> "${sbin}/iptables-wrapper" <<EOF
-# Update links to point to the selected binaries
+# Update debian links to point to the selected binaries
 update-alternatives --set iptables "/usr/sbin/iptables-\${mode}" > /dev/null || failed=1
 update-alternatives --set ip6tables "/usr/sbin/ip6tables-\${mode}" > /dev/null || failed=1
 EOF
     ;;
 
+    mariner)
+cat >> "${sbin}/iptables-wrapper" <<EOF
+# Update mariner links to point to the selected binaries
+# mariner uses tdnf which does not update alternatives from fresh install
+alternatives \
+        --install /usr/sbin/iptables iptables /usr/sbin/xtables-legacy-multi 100 \
+        --slave /usr/sbin/iptables-restore iptables-restore /usr/sbin/xtables-legacy-multi \
+        --slave /usr/sbin/iptables-save iptables-save /usr/sbin/xtables-legacy-multi
+alternatives \
+        --install /usr/sbin/ip6tables ip6tables /usr/sbin/xtables-legacy-multi 100 \
+        --slave /usr/sbin/ip6tables-restore ip6tables-restore /usr/sbin/xtables-legacy-multi \
+        --slave /usr/sbin/ip6tables-save ip6tables-save /usr/sbin/xtables-legacy-multi
+
+alternatives --set iptables "/usr/sbin/xtables-legacy-multi" > /dev/null || failed=1
+alternatives --set ip6tables "/usr/sbin/xtables-legacy-multi" > /dev/null || failed=1
+
+EOF
+    ;;
+
     *)
 cat >> "${sbin}/iptables-wrapper" <<EOF
-# Update links to point to the selected binaries
+# Update * links to point to the selected binaries
 for cmd in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
     rm -f "${sbin}/\${cmd}"
     ln -s "${sbin}/xtables-\${mode}-multi" "${sbin}/\${cmd}"
@@ -204,9 +228,9 @@ case "${altstyle}" in
             --install /usr/sbin/iptables iptables /usr/sbin/iptables-wrapper 100 \
             --slave /usr/sbin/iptables-restore iptables-restore /usr/sbin/iptables-wrapper \
             --slave /usr/sbin/iptables-save iptables-save /usr/sbin/iptables-wrapper \
-            --slave /usr/sbin/ip6tables iptables /usr/sbin/iptables-wrapper \
-            --slave /usr/sbin/ip6tables-restore iptables-restore /usr/sbin/iptables-wrapper \
-            --slave /usr/sbin/ip6tables-save iptables-save /usr/sbin/iptables-wrapper
+            --slave /usr/sbin/ip6tables ip6tables /usr/sbin/iptables-wrapper \
+            --slave /usr/sbin/ip6tables-restore ip6tables-restore /usr/sbin/iptables-wrapper \
+            --slave /usr/sbin/ip6tables-save ip6tables-save /usr/sbin/iptables-wrapper
 	;;
 
     debian)
@@ -219,6 +243,17 @@ case "${altstyle}" in
             --slave /usr/sbin/ip6tables-restore ip6tables-restore /usr/sbin/iptables-wrapper \
             --slave /usr/sbin/ip6tables-save ip6tables-save /usr/sbin/iptables-wrapper
 	;;
+
+    mariner)
+	alternatives \
+            --install /usr/sbin/iptables iptables /usr/sbin/xtables-legacy-multi 100 \
+            --slave /usr/sbin/iptables-restore iptables-restore /usr/sbin/xtables-legacy-multi \
+            --slave /usr/sbin/iptables-save iptables-save /usr/sbin/xtables-legacy-multi
+	alternatives \
+            --install /usr/sbin/ip6tables ip6tables /usr/sbin/xtables-legacy-multi 100 \
+            --slave /usr/sbin/ip6tables-restore ip6tables-restore /usr/sbin/xtables-legacy-multi \
+            --slave /usr/sbin/ip6tables-save ip6tables-save /usr/sbin/xtables-legacy-multi
+    ;;
 
     *)
 	for cmd in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do

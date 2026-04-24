@@ -29,10 +29,14 @@ include Makefile
 GOLANG_IMAGE ?= mcr.microsoft.com/oss/go/microsoft/golang:1.26.2-1@sha256:24d0b15c59a25b32e382a52eaf2ac6f2262540753cd9cc541037de24f733d72b
 export GOLANG_IMAGE
 
+# ACN base/runtime image.
+BASE_IMAGE ?= mcr.microsoft.com/azurelinux/distroless/base:3.0
+export BASE_IMAGE
+
 
 # Space-separated KEY=VALUE pairs forwarded as --build-arg to docker buildx.
 # Example: DOCKER_BUILD_ARGS=HTTP_PROXY=http://proxy:8080 CUSTOM_FLAG=1
-DOCKER_BUILD_ARGS ?= GOEXPERIMENT=ms_nocgo_opensslcrypto GOLANG_IMAGE=$(GOLANG_IMAGE)
+DOCKER_BUILD_ARGS ?= GOEXPERIMENT=ms_nocgo_opensslcrypto GOLANG_IMAGE=$(GOLANG_IMAGE) BASE_IMAGE=$(BASE_IMAGE)
 export DOCKER_BUILD_ARGS
 
 # Registries used by acn-* targets.  Defaults to the upstream REGISTRIES.
@@ -55,6 +59,22 @@ ACN_BUILDER_IMAGE_TAG := $(shell scripts/make-image-tag.sh images/builder)-$(ACN
 ACN_BUILDER_IMAGE_NAME := cilium-builder
 ACN_BUILDER_IMAGE := $(firstword $(ACN_REGISTRIES))/$(ACN_BUILDER_IMAGE_NAME):$(ACN_BUILDER_IMAGE_TAG)
 
+# Distroless image directories.
+DISTROLESS_RUNTIME_DIRECTORY ?= images/distroless/runtime
+
+# Compute the distroless runtime image tag and reference.
+ACN_DISTROLESS_RUNTIME_IMAGE_INPUT_HASH := $(shell printf '%s\n' "$(DOCKER_BUILD_ARGS)" | sha256sum | cut -c1-12)
+ACN_DISTROLESS_RUNTIME_IMAGE_TAG := $(shell scripts/make-image-tag.sh images/distroless/runtime)-$(ACN_DISTROLESS_RUNTIME_IMAGE_INPUT_HASH)
+ACN_DISTROLESS_RUNTIME_IMAGE_NAME := cilium-runtime-distroless
+ACN_DISTROLESS_RUNTIME_IMAGE := $(firstword $(ACN_REGISTRIES))/$(ACN_DISTROLESS_RUNTIME_IMAGE_NAME):$(ACN_DISTROLESS_RUNTIME_IMAGE_TAG)
+
+# Compute the distroless builder image tag and reference.
+# The builder depends on the distroless runtime image, so include that in the hash.
+ACN_DISTROLESS_BUILDER_IMAGE_INPUT_HASH := $(shell printf '%s\n%s\n' "$(DOCKER_BUILD_ARGS)" "$(ACN_DISTROLESS_RUNTIME_IMAGE)" | sha256sum | cut -c1-12)
+ACN_DISTROLESS_BUILDER_IMAGE_TAG := $(shell scripts/make-image-tag.sh images/distroless/builder)-$(ACN_DISTROLESS_BUILDER_IMAGE_INPUT_HASH)
+ACN_DISTROLESS_BUILDER_IMAGE_NAME := cilium-builder-distroless
+ACN_DISTROLESS_BUILDER_IMAGE := $(firstword $(ACN_REGISTRIES))/$(ACN_DISTROLESS_BUILDER_IMAGE_NAME):$(ACN_DISTROLESS_BUILDER_IMAGE_TAG)
+
 # ---- acn image targets -----------------------------------------------------
 #
 # These targets use scripts/acn-build-image.sh, which follows the same
@@ -68,13 +88,25 @@ ACN_BUILDER_IMAGE := $(firstword $(ACN_REGISTRIES))/$(ACN_BUILDER_IMAGE_NAME):$(
 #   		$(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
 #
 
-acn-all-images: acn-runtime-image acn-builder-image acn-cilium-image acn-operator-image acn-hubble-relay-image
+acn-all-images: acn-runtime-image acn-builder-image acn-distroless-runtime-image acn-distroless-builder-image acn-cilium-image acn-operator-image acn-hubble-relay-image
 
 acn-runtime-image: .buildx_builder
 	IMAGE_TAG=$(ACN_RUNTIME_IMAGE_TAG) DOCKER_BUILD_TARGET="" scripts/acn-build-image.sh cilium-runtime images/runtime $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
 
 acn-builder-image: .buildx_builder
 	IMAGE_TAG=$(ACN_BUILDER_IMAGE_TAG) DOCKER_BUILD_ARGS="$(DOCKER_BUILD_ARGS) CILIUM_RUNTIME_IMAGE=$(ACN_RUNTIME_IMAGE)" scripts/acn-build-image.sh cilium-builder images/builder $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+acn-distroless-runtime-image: .buildx_builder
+	IMAGE_TAG=$(ACN_DISTROLESS_RUNTIME_IMAGE_TAG) ROOT_CONTEXT=true scripts/acn-build-image.sh cilium-runtime-distroless images/distroless/runtime $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+acn-distroless-builder-image: .buildx_builder
+	IMAGE_TAG=$(ACN_DISTROLESS_BUILDER_IMAGE_TAG) DOCKER_BUILD_ARGS="$(DOCKER_BUILD_ARGS) CILIUM_RUNTIME_IMAGE=$(ACN_DISTROLESS_RUNTIME_IMAGE)" ROOT_CONTEXT=true scripts/acn-build-image.sh cilium-builder-distroless images/distroless/builder $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
+
+acn-update-distroless-runtime-image:
+	distroless/scripts/update-cilium-runtime-image.sh $(ACN_DISTROLESS_RUNTIME_IMAGE) $(DISTROLESS_RUNTIME_DIRECTORY)
+
+acn-update-distroless-builder-image:
+	distroless/scripts/update-cilium-builder-image.sh
 
 acn-cilium-image: .buildx_builder
 	DOCKER_BUILD_ARGS="$(DOCKER_BUILD_ARGS) CILIUM_BUILDER_IMAGE=$(ACN_BUILDER_IMAGE) CILIUM_RUNTIME_IMAGE=$(ACN_RUNTIME_IMAGE)" ROOT_CONTEXT=true scripts/acn-build-image.sh cilium-dev images/cilium $(PLATFORMS) $(OUTPUT) "$$(cat .buildx_builder)" $(ACN_REGISTRIES)
@@ -101,3 +133,15 @@ print-acn-runtime-image:
 
 print-acn-builder-image:
 	@echo $(ACN_BUILDER_IMAGE)
+
+print-acn-distroless-runtime-tag:
+	@echo $(ACN_DISTROLESS_RUNTIME_IMAGE_TAG)
+
+print-acn-distroless-builder-tag:
+	@echo $(ACN_DISTROLESS_BUILDER_IMAGE_TAG)
+
+print-acn-distroless-runtime-image:
+	@echo $(ACN_DISTROLESS_RUNTIME_IMAGE)
+
+print-acn-distroless-builder-image:
+	@echo $(ACN_DISTROLESS_BUILDER_IMAGE)

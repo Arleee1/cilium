@@ -2,7 +2,21 @@ name: Smoke Test
 
 # Any change in triggers needs to be reflected in the concurrency group.
 on:
-  pull_request: {}
+  workflow_dispatch:
+    inputs:
+      PR-number:
+        description: "Pull request number."
+        required: true
+      context-ref:
+        description: "Context in which the workflow runs. If PR is from a fork, will be the PR target branch (general case). If PR is NOT from a fork, will be the PR branch itself (this allows committers to test changes to workflows directly from PRs)."
+        required: true
+      SHA:
+        description: "SHA under test (head of the PR branch)."
+        required: true
+      extra-args:
+        description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
+        required: false
+        default: '{}'
   push:
     branches:
       - v1.19
@@ -10,10 +24,22 @@ on:
   merge_group:
     types: [checks_requested]
 
-permissions: read-all
+permissions:
+  ### ACN CHANGE ###
+  # Need statuses to report back to PR
+  id-token: write
+  contents: read
+  statuses: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.after || github.event.merge_group && github.run_id }}
+  group: |
+    ${{ github.workflow }}
+    ${{ github.event_name }}
+    ${{
+      (github.event_name == 'push' && github.sha) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+      (github.event_name == 'pull_request' && github.event.number)
+    }}
   cancel-in-progress: ${{ !github.event.merge_group }}
 
 env:
@@ -24,6 +50,30 @@ env:
   PROM_VERSION: 2.34.0
 
 jobs:
+  echo-inputs:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Echo Workflow Dispatch Inputs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo Workflow Dispatch Inputs
+        run: |
+          echo '${{ tojson(inputs) }}'
+      - name: Echo Concurrency Group
+        run: |
+          echo "Current concurrency group:"
+          echo "${{ github.workflow }}"
+          echo "${{ github.event_name }}"
+          echo "${{
+            (github.event_name == 'push' && github.sha) ||
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+            (github.event_name == 'pull_request' && github.event.number)
+          }}"
+          echo "Full concurrency group: ${{ github.workflow }}-${{ github.event_name }}-${{
+            (github.event_name == 'push' && github.sha) ||
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+            (github.event_name == 'pull_request' && github.event.number)
+          }}"
+
   check_changes:
     name: Deduce required tests from code changes
     runs-on: ubuntu-24.04
@@ -93,7 +143,7 @@ jobs:
           persist-credentials: false
 
       - name: Set Environment Variables
-        uses: ./.github/actions/set-env-variables
+        uses: ./.github/actions/set-env-variables-acn
 
       - name: Get Cilium's default values
         id: default_vars
@@ -126,7 +176,7 @@ jobs:
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
+            until docker manifest inspect acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Generate CA, Server and Client certs for Operator Prometheus
@@ -276,3 +326,21 @@ jobs:
           artifacts_suffix: "${{ env.job_name }}"
           job_status: "${{ job.status }}"
           capture_features_tested: ${{ steps.run-tests.outcome != 'skipped' }}
+
+      - name: Report status to PR
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            const contextName = 'Smoke Test';
+            const description = state === 'success' ? 'Smoke tests passed' : 'Smoke tests failed';
+
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: '${{ inputs.SHA }}',
+              state: state,
+              context: contextName,
+              description: description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });

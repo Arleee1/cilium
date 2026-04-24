@@ -50,3 +50,8 @@ else
   echo "Updated the envoy image to be a latest version"
   echo "Please don't forget to execute 'make -C install/kubernetes && make -C Documentation update-helm-values'"
 fi
+
+# Distroless
+DOCKERFILEPATH="./images/distroless/cilium/Dockerfile"
+echo "Updating image in ${DOCKERFILEPATH}"
+sed -i -E "s|ARG CILIUM_ENVOY_IMAGE=quay.io/cilium/cilium-envoy.*:.*@sha256:[0-9a-z]*|ARG CILIUM_ENVOY_IMAGE=${image}:${image_tag}@${image_sha256}|" ${DOCKERFILEPATH}

@@ -7,11 +7,28 @@ on:
       - ft/v1.19/**
     paths-ignore:
       - 'Documentation/**'
+  workflow_dispatch:
+    inputs:
+      PR-number:
+        description: "Pull request number."
+        required: true
+      context-ref:
+        description: "Context in which the workflow runs. If PR is from a fork, will be the PR target branch (general case). If PR is NOT from a fork, will be the PR branch itself (this allows committers to test changes to workflows directly from PRs)."
+        required: true
+      SHA:
+        description: "SHA under test (head of the PR branch)."
+        required: true
+      extra-args:
+        description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
+        required: false
+        default: '{}'
 
 permissions:
+  actions: read
   contents: read
   # For Azure OIDC authentication to pull test images from ACR
   id-token: write
+  statuses: write
 
 env:
   KIND_CONFIG: .github/kind-config.yaml
@@ -19,7 +36,51 @@ env:
   TIMEOUT: 2m
   LOG_TIME: 30m
 
+concurrency:
+  # Structure:
+  # - Workflow name
+  # - Event type
+  # - A unique identifier depending on event type:
+  #   - schedule: SHA
+  #   - workflow_dispatch: PR number
+  #
+  # This structure ensures a unique concurrency group name is generated for each
+  # type of testing, such that re-runs will cancel the previous run.
+  group: |
+    ${{ github.workflow }}
+    ${{ github.event_name }}
+    ${{
+      (github.event_name == 'push' && github.sha) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+      (github.event_name == 'pull_request' && github.event.number)
+    }}
+  cancel-in-progress: true
+
+
 jobs:
+  echo-inputs:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Echo Workflow Dispatch Inputs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo Workflow Dispatch Inputs
+        run: |
+          echo '${{ tojson(inputs) }}'
+      - name: Echo Concurrency Group
+        run: |
+          echo "Current concurrency group:"
+          echo "${{ github.workflow }}"
+          echo "${{ github.event_name }}"
+          echo "${{
+            (github.event_name == 'push' && github.sha) ||
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+            (github.event_name == 'pull_request' && github.event.number)
+          }}"
+          echo "Full concurrency group: ${{ github.workflow }}-${{ github.event_name }}-${{
+            (github.event_name == 'push' && github.sha) ||
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+            (github.event_name == 'pull_request' && github.event.number)
+          }}"
   preflight-clusterrole:
     name: Preflight Clusterrole Check
     runs-on: ubuntu-24.04
@@ -55,11 +116,13 @@ jobs:
       - name: Checkout target branch to access local actions
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.base_ref || github.ref }}
+          ### ACN CHANGE ###
+          # We want to always pull from the branch that queued this workflow when setting variables
+          ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
 
       - name: Set Environment Variables
-        uses: ./.github/actions/set-env-variables
+        uses: ./.github/actions/set-env-variables-acn
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -80,23 +143,13 @@ jobs:
           else
             echo tag=${{ github.sha }} >> $GITHUB_OUTPUT
           fi
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_BUILD_SUBSCRIPTION_ID }}
-
-      - name: acr login
-        run: |
-          az acr login -n acnpublic.azurecr.io
 
       - name: Wait for images to be available
         timeout-minutes: 30
         shell: bash
         run: |
-          until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci:${{ steps.vars.outputs.tag }} &> /dev/null; do sleep 45s; done
-          until docker manifest inspect quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator-generic-ci:${{ steps.vars.outputs.tag }} &> /dev/null; do sleep 45s; done
+          until docker manifest inspect acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci:${{ steps.vars.outputs.tag }} &> /dev/null; do sleep 45s; done
+          until docker manifest inspect acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator-generic-ci:${{ steps.vars.outputs.tag }} &> /dev/null; do sleep 45s; done
 
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
@@ -135,11 +188,11 @@ jobs:
             --set kubeProxyReplacement=true \
             --set bpf.masquerade=false \
             --set ipam.mode=kubernetes \
-            --set image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
+            --set image.repository=acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
             --set image.tag=${{ steps.vars.outputs.tag }} \
             --set image.pullPolicy=IfNotPresent \
             --set image.useDigest=false \
-            --set operator.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
+            --set operator.image.repository=acnpublic.azurecr.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
             --set operator.image.suffix=-ci \
             --set operator.image.tag=${{ steps.vars.outputs.tag }} \
             --set operator.image.pullPolicy=IfNotPresent \
@@ -185,3 +238,21 @@ jobs:
           artifacts_suffix: "${{ env.job_name }}"
           job_status: "${{ job.status }}"
           junits-directory: 'test/k8s/manifests/netpol-cyclonus/cyclonus-results'
+
+      - name: Report status to PR
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            const contextName = 'Cyclonus Network Policy Test';
+            const description = state === 'success' ? 'Cyclonus Network Policy Test passed' : 'Cyclonus Network Policy Test failed';
+
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: '${{ inputs.SHA }}',
+              state: state,
+              context: contextName,
+              description: description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });

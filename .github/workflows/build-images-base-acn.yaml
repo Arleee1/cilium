@@ -9,17 +9,14 @@ on:
       - reopened
     branches:
       - dev/*
-    paths:
-      - images/runtime/**
-      - images/builder/**
-      - images/Makefile.acn
-      - images/scripts/acn-build-image.sh
   push:
     branches:
       - dev/*
     paths:
       - images/runtime/**
       - images/builder/**
+      - images/distroless/runtime/**
+      - images/distroless/builder/**
       - images/Makefile.acn
       - images/scripts/acn-build-image.sh
   schedule:
@@ -30,6 +27,8 @@ on:
 permissions:
   # To be able to access the repository with `actions/checkout`
   contents: read
+  # Required for dorny/paths-filter to list PR changed files
+  pull-requests: read
   # Required for Azure OIDC authentication
   id-token: write
 
@@ -38,8 +37,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-push:
-    name: Build and Push Base Images
+  check-changes:
+    name: Check for base image changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      base-images: ${{ steps.filter.outputs.base-images }}
+    steps:
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            base-images:
+              - 'images/runtime/**'
+              - 'images/builder/**'
+              - 'images/distroless/runtime/**'
+              - 'images/distroless/builder/**'
+              - 'images/Makefile.acn'
+              - 'images/scripts/acn-build-image.sh'
+
+  build-and-push-standard:
+    name: Build and Push Standard Base Images
+    needs: check-changes
+    if: |
+      always()
+      && (needs.check-changes.result == 'skipped' || needs.check-changes.outputs.base-images == 'true')
     timeout-minutes: 60
     runs-on: ubuntu-24.04
     steps:
@@ -82,5 +104,53 @@ jobs:
         working-directory: images
         run: |
           make -f Makefile.acn acn-builder-image \
+            ACN_REGISTRIES=acnpublic.azurecr.io/cilium \
+            PUSH=true
+
+  build-and-push-distroless:
+    name: Build and Push Distroless Base Images
+    needs: check-changes
+    if: |
+      always()
+      && (needs.check-changes.result == 'skipped' || needs.check-changes.outputs.base-images == 'true')
+    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@0ad4b8fadaa221de15dcec353f45205ec38ea70b # v4.1.4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb # v3.3.0
+        with:
+          driver-opts: |
+            image=mcr.microsoft.com/oss/moby/buildkit:0.11.6-2
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_BUILD_SUBSCRIPTION_ID }}
+
+      - name: ACR Login
+        run: az acr login -n acnpublic.azurecr.io
+
+      - name: Build and Push Distroless Runtime Image
+        working-directory: images
+        run: |
+          make -f Makefile.acn acn-distroless-runtime-image \
+            ACN_REGISTRIES=acnpublic.azurecr.io/cilium \
+            PUSH=true
+
+      - name: Build and Push Distroless Builder Image
+        working-directory: images
+        run: |
+          make -f Makefile.acn acn-distroless-builder-image \
             ACN_REGISTRIES=acnpublic.azurecr.io/cilium \
             PUSH=true

@@ -3,6 +3,11 @@
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
+# FIPS
+## Set BASE_IMAGE=mcr.microsoft.com/azurelinux/distroless/base:3.0
+## Leverage Builder from Distroless
+## distroless/base brings in required openssl libs.
+
 ARG BASE_IMAGE=scratch
 ARG GOLANG_IMAGE=docker.io/library/golang:1.25.8@sha256:779b230b2508037a8095c9e2d223a6405f8426e12233b694dbae50197b9f6d04
 ARG ALPINE_IMAGE=docker.io/library/alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
