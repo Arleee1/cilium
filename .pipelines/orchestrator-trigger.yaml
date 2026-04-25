@@ -1,0 +1,186 @@
+trigger:
+  branches:
+    include:
+      - patch-bump/*      # Ai orchestrator branch trigger
+
+pr: none
+
+resources:
+  repositories:
+    - repository: ACN-Agent
+      type: git
+      name: One/Networking-ACN-Agent
+      ref: refs/heads/jpayne/CI-CD-Orchestrator # Change to main once merged
+
+## Notes
+# First iteration is to have the AI agent reference within the dev/* branch
+# Plan to move to CI/CD branch, main, once we have a working POC
+#   - This would leverage an API call to trigger the respective orchestrator pipeline.
+#   - Orchestrator is responsible for coordinateing the test agent to trigger the E2E correctly
+
+stages:
+  - stage: setup
+    displayName: Setup
+    jobs:
+      - job: env
+        displayName: Setup
+        pool:
+          name: "$(BUILD_POOL_NAME_DEFAULT)"
+        steps:
+          - checkout: self
+          - checkout: ACN-Agent
+            path: s/ACN-Agent
+          - script: |
+              echo "hello world"
+              which openssl
+              which base64
+              which python3
+              python3 --version
+            displayName: "Debug: Verify Tools Available"
+
+          - bash: |
+              set -e
+
+              # --- Step 1: Decode the private key ---
+              echo "step 1"
+              printf '%s' "$GITHUB_APP_PRIVATE_KEY" | tr -d ' \n\r' | base64 -d > /tmp/github_app.pem
+              chmod 600 /tmp/github_app.pem
+              echo "PEM first line: $(head -1 /tmp/github_app.pem)"
+              echo "PEM last line:  $(tail -1 /tmp/github_app.pem)"
+              echo "PEM line count: $(wc -l < /tmp/github_app.pem)"
+
+              # --- Step 2: Build JWT using openssl ---
+              echo "step 2"
+              NOW=$(date +%s)
+              echo "step 2 - Header"
+              HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' \
+                | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+              echo "step 2 - Payload"
+              PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' \
+                $((NOW - 60)) $((NOW + 600)) "$GITHUB_APP_ID" \
+                | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+              echo "step 2 - Signature"
+              SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" \
+                | openssl dgst -binary -sha256 -sign /tmp/github_app.pem \
+                | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+              JWT="$HEADER.$PAYLOAD.$SIG"
+
+              # --- Step 3: Exchange JWT for a short-lived installation token ---
+              echo "step 3 - Exchanging JWT for installation token"
+              INSTALL_TOKEN_RESPONSE=$(curl -sf -X POST \
+                -H "Authorization: Bearer $JWT" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/app/installations/$GITHUB_APP_INSTALLATION_ID/access_tokens")
+
+              # Log permissions granted to this token (safe — does not print the token itself)
+              echo "step 3 - Token permissions granted by GitHub:"
+              echo "$INSTALL_TOKEN_RESPONSE" | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); print('  permissions:', json.dumps(d.get('permissions',{}), indent=4)); print('  expires_at:', d.get('expires_at','n/a')); print('  repository_selection:', d.get('repository_selection','n/a'))"
+              INSTALL_TOKEN=$(echo "$INSTALL_TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+              # --- Step 4: Validate the token ---
+              echo "step 4 - Validating installation token"
+              RATE_LIMIT_RESPONSE=$(curl -sf \
+                -H "Authorization: Bearer $INSTALL_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/rate_limit")
+              if [[ $? -eq 0 ]]; then
+                echo "✅ Token is valid"
+                echo "$RATE_LIMIT_RESPONSE"
+              else
+                echo "❌ Token validation failed"
+                exit 1
+              fi
+
+              # --- Step 5: Publish token as a pipeline variable for follow-on steps ---
+              echo "##vso[task.setvariable variable=INSTALL_TOKEN;issecret=true]$INSTALL_TOKEN"
+
+            displayName: 'Generate GitHub Installation Token'
+            env:
+              GITHUB_APP_ID: $(GITHUB_APP_ID)
+              GITHUB_APP_PRIVATE_KEY: $(GITHUB_APP_PRIVATE_KEY)
+              GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
+
+          - bash: |
+              echo "=== Debug: Login Step Environment Variables ==="
+              echo "BUILD_SOURCEVERSION:      $(Build.SourceVersion)"
+              echo "BUILD_SOURCEBRANCH:       $(Build.SourceBranch)"
+              echo "BUILD_REQUESTEDFOR:       $(Build.RequestedFor)"
+              echo "BUILD_DEFINITIONID:       $BUILD_DEFINITIONID"
+              echo "STATE_STORAGE_ACCOUNT:    $(STATE_STORAGE_ACCOUNT)"
+              echo "STATE_STORAGE_CONTAINER:  $(STATE_STORAGE_CONTAINER)"
+              echo "AZURE_OPENAI_ENDPOINT:    $(AZURE_OPENAI_ENDPOINT)"
+              echo "AZURE_OPENAI_DEPLOYMENT:  $(AZURE_OPENAI_DEPLOYMENT)"
+              echo "ADO_ORG"                  $(System.CollectionUri)
+              echo "ADO_PROJECT:              $(System.TeamProject)"
+              echo "AZURE_DEVOPS_EXT_PAT set: $([[ -n '$(SYSTEM_ACCESSTOKEN)' ]] && echo 'yes' || echo 'no')"
+              echo "GITHUB_TOKEN set:         $([[ -n '$(INSTALL_TOKEN)' ]] && echo 'yes' || echo 'no')"
+              echo "GITHUB_REPO:              $(Build.Repository.Name)"
+              echo "==============================================="
+            displayName: "Debug: Login Step Env Vars"
+            env:
+              AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+              BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+              BUILD_REQUESTEDFOR: $(Build.RequestedFor)
+              BUILD_DEFINITIONID: $(System.DefinitionId)
+              STATE_STORAGE_CONTAINER: $(STATE_STORAGE_CONTAINER)
+              AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
+              AZURE_OPENAI_DEPLOYMENT: $(AZURE_OPENAI_DEPLOYMENT)
+              GITHUB_TOKEN: $(INSTALL_TOKEN)
+
+          - bash: |
+              echo "=== Debug: Checkout Directory Structure ==="
+              echo "Build.SourcesDirectory: $(Build.SourcesDirectory)"
+              echo ""
+              echo "--- Top-level contents ---"
+              ls -la "$(Build.SourcesDirectory)/"
+              echo ""
+              echo "--- ACN-Agent contents ---"
+              ls -la "$(Build.SourcesDirectory)/ACN-Agent/" || echo "dir not found"
+              echo ""
+              echo "--- orchestrator contents ---"
+              ls -la "$(Build.SourcesDirectory)/ACN-Agent/cilium-private-release-orchestrator/orchestrator/" || echo "dir not found"
+              echo ""
+              echo "--- Confirming key files exist ---"
+              [[ -f "$(Build.SourcesDirectory)/ACN-Agent/cilium-private-release-orchestrator/orchestrator/requirements.txt" ]] \
+                && echo "✅ requirements.txt found" || echo "❌ requirements.txt NOT found"
+              [[ -f "$(Build.SourcesDirectory)/ACN-Agent/cilium-private-release-orchestrator/orchestrator/bootstrap.py" ]] \
+                && echo "✅ bootstrap.py found" || echo "❌ bootstrap.py NOT found"
+              echo "==========================================="
+            displayName: "Debug: Repo Directory Structure"
+
+          - task: AzureCLI@2
+            displayName: "Login"
+            inputs:
+              azureSubscription: $(BUILD_VALIDATIONS_SERVICE_CONNECTION)
+              scriptLocation: "inlineScript"
+              scriptType: "bash"
+              workingDirectory: "$(Build.SourcesDirectory)"
+              inlineScript: |
+                export BUILD_SOURCEVERSION="$(Build.SourceVersion)"
+                export BUILD_SOURCEBRANCH="$(Build.SourceBranch)"
+                export BUILD_REQUESTEDFOR="$(Build.RequestedFor)"
+                ORCH_DIR="$(Build.SourcesDirectory)/ACN-Agent/cilium-private-release-orchestrator/orchestrator"
+                echo "ORCH_DIR: $ORCH_DIR"
+                echo "Agent outbound IP: $(curl -sf https://api.ipify.org)" # Added due to potential NSP blocks.
+                python3 -m ensurepip --upgrade
+                python3 -m pip install --user -r "$ORCH_DIR/requirements.txt"
+                python3 "$ORCH_DIR/bootstrap.py"
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+              BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+              BUILD_REQUESTEDFOR: $(Build.RequestedFor)
+              BUILD_DEFINITIONID: $(System.DefinitionId)
+              STATE_STORAGE_ACCOUNT: $(STATE_STORAGE_ACCOUNT)
+              STATE_STORAGE_CONTAINER: $(STATE_STORAGE_CONTAINER)
+              AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
+              AZURE_OPENAI_DEPLOYMENT: $(AZURE_OPENAI_DEPLOYMENT)
+              GITHUB_TOKEN: $(INSTALL_TOKEN)
+              GITHUB_REPO: $(Build.Repository.Name)
+              ADO_ORG: $(System.CollectionUri)
+              ADO_PROJECT: $(System.TeamProject)
+              PYTHONUNBUFFERED: "1"
