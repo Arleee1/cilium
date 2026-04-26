@@ -56,7 +56,7 @@ jobs:
       statuses: write
     steps:
       - name: Set final commit status
-        uses: cilium/cilium/.github/actions/set-commit-status@354584b6acb8b1d0203ab1001815fc50916979be # main
+        uses: cilium/cilium/.github/actions/set-commit-status@6e3229eb7044bb1c44f3764c50a076430d45e335 # main
         with:
           sha: ${{ inputs.sha }}
           status: ${{ inputs.success && 'success' || 'failure' }}
