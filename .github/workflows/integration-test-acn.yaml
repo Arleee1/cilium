@@ -50,8 +50,9 @@ concurrency:
   # - Workflow name
   # - Event type
   # - A unique identifier depending on event type:
-  #   - schedule: SHA
+  #   - push: SHA
   #   - workflow_dispatch: PR number
+  #   - pull_request: PR number
   #
   # This structure ensures a unique concurrency group name is generated for each
   # type of testing, such that re-runs will cancel the previous run.
@@ -60,7 +61,8 @@ concurrency:
     ${{ github.event_name }}
     ${{
       (github.event_name == 'push' && github.sha) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number)
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.number)
     }}
   cancel-in-progress: true
 
