@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"os"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -37,8 +38,9 @@ var _ v3.AggregatedDiscoveryServiceServer = (*Server)(nil)
 
 // Server is the xDS control plane for the stand-alone zTunnel proxy.
 //
-// It sends workload and service discovery events to zTunnel. Certificate
-// signing is handled separately by the CA server (pkg/ztunnel/ca).
+// It sends workload and service discovery events to zTunnel over a Unix
+// socket. Certificate signing is handled separately by the CA server
+// (pkg/ztunnel/ca) on TCP port 15012.
 type Server struct {
 	l                         net.Listener
 	g                         *grpc.Server
@@ -51,6 +53,8 @@ type Server struct {
 	// ztunnel reconnect are safe since xDS upserts are idempotent.
 	endpointEventChan chan *EndpointEvent
 	metrics           *Metrics
+	// xdsUnixAddr is the Unix socket address for the xDS server.
+	xdsUnixAddr string
 	v3.UnimplementedAggregatedDiscoveryServiceServer
 }
 
@@ -62,6 +66,7 @@ func newServer(
 	enrolledNamespaceTable statedb.RWTable[*table.EnrolledNamespace],
 	endpointEventChanBufferSize int,
 	metrics *Metrics,
+	xdsUnixAddr string,
 ) *Server {
 	return &Server{
 		log:                       log,
@@ -71,6 +76,7 @@ func newServer(
 		db:                        db,
 		enrolledNamespaceTable:    enrolledNamespaceTable,
 		metrics:                   metrics,
+		xdsUnixAddr:               xdsUnixAddr,
 	}
 }
 
@@ -87,6 +93,10 @@ func (x *Server) Serve() error {
 	// keepalive options match config values from:
 	// https://github.com/istio/istio/blob/b68cd04f9f132c1361d62eb14125e915e8011428/pkg/keepalive/options.go#L45
 	// Without these, our grpc server will eventually send a Go Away message to ztunnel, killing the connection.
+	//
+	// The XDS server listens on a Unix socket so TLS is not required; the
+	// CA server (pkg/ztunnel/ca) handles TLS-based certificate signing on
+	// TCP port 15012 separately.
 	grpcOptions := []grpc.ServerOption{
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime: 15 * time.Second,
@@ -103,7 +113,10 @@ func (x *Server) Serve() error {
 
 	v3.RegisterAggregatedDiscoveryServiceServer(x.g, x)
 
-	x.l, err = net.Listen("tcp", "127.0.0.1:15012")
+	// Remove stale socket file if it exists from a previous run.
+	os.Remove(x.xdsUnixAddr)
+
+	x.l, err = net.Listen("unix", x.xdsUnixAddr)
 	if err != nil {
 		return err
 	}

@@ -47,7 +47,6 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      hostNetwork: true
       dnsPolicy: ClusterFirst
       {{- if .Values.authentication.mutual.spire.enabled }}
       initContainers:
@@ -77,9 +76,7 @@ spec:
             - ztunnel
           env:
             - name: XDS_ADDRESS
-              value: "https://localhost:15012"
-            - name: XDS_ROOT_CA
-              value: "/etc/ztunnel/bootstrap-root.crt"
+              value: "unix:///var/run/cilium/xds.sock"
             {{- if .Values.authentication.mutual.spire.enabled }}
             - name: SPIRE_ENABLED
               value: "true"

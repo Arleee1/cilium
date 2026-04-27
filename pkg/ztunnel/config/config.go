@@ -10,13 +10,17 @@ import (
 )
 
 const (
-	DefaultCleanupStatePath = "/var/run/cilium/ztunnel-enrolled.json"
+	DefaultZtunnelUnixAddress = "/var/run/cilium/ztunnel.sock"
+	DefaultXDSUnixAddress     = "/var/run/cilium/xds.sock"
+	DefaultCleanupStatePath   = "/var/run/cilium/ztunnel-enrolled.json"
 )
 
 var DefaultConfig = Config{
 	EnableZTunnel:                  false,
 	EnableSPIRE:                    false,
 	EndpointEventChannelBufferSize: 1,
+	ZDSUnixAddr:                    DefaultZtunnelUnixAddress,
+	XDSUnixAddr:                    DefaultXDSUnixAddress,
 	CleanupStatePath:               DefaultCleanupStatePath,
 }
 
@@ -27,6 +31,8 @@ type Config struct {
 	EnableZTunnel                  bool   `mapstructure:"enable-ztunnel"`
 	EnableSPIRE                    bool   `mapstructure:"enable-ztunnel-spire"`
 	EndpointEventChannelBufferSize int    `mapstructure:"ztunnel-endpoint-event-channel-buffer-size"`
+	ZDSUnixAddr                    string `mapstructure:"ztunnel-zds-unix-addr"`
+	XDSUnixAddr                    string `mapstructure:"ztunnel-xds-unix-addr"`
 	CleanupStatePath               string `mapstructure:"ztunnel-cleanup-state-path"`
 }
 
@@ -35,6 +41,8 @@ func (c Config) Flags(flags *pflag.FlagSet) {
 	flags.Bool("enable-ztunnel-spire", false, "Use SPIRE for zTunnel certificate management instead of the built-in CA")
 	flags.Int("ztunnel-endpoint-event-channel-buffer-size", 1, "Buffer size for the ztunnel endpoint event channel")
 	flags.MarkHidden("ztunnel-endpoint-event-channel-buffer-size")
+	flags.String("ztunnel-zds-unix-addr", DefaultZtunnelUnixAddress, "Unix address for zds server")
+	flags.String("ztunnel-xds-unix-addr", DefaultXDSUnixAddress, "Unix address for xds server")
 	flags.String("ztunnel-cleanup-state-path", DefaultCleanupStatePath, "Path to store ztunnel enrolled pod state for cleanup on feature disable")
 }
 
