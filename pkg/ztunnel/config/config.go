@@ -15,6 +15,7 @@ const (
 
 var DefaultConfig = Config{
 	EnableZTunnel:                  false,
+	EnableSPIRE:                    false,
 	EndpointEventChannelBufferSize: 1,
 	CleanupStatePath:               DefaultCleanupStatePath,
 }
@@ -24,12 +25,14 @@ var DefaultConfig = Config{
 // while the agent uses this Config struct for dependency injection.
 type Config struct {
 	EnableZTunnel                  bool   `mapstructure:"enable-ztunnel"`
+	EnableSPIRE                    bool   `mapstructure:"enable-ztunnel-spire"`
 	EndpointEventChannelBufferSize int    `mapstructure:"ztunnel-endpoint-event-channel-buffer-size"`
 	CleanupStatePath               string `mapstructure:"ztunnel-cleanup-state-path"`
 }
 
 func (c Config) Flags(flags *pflag.FlagSet) {
 	flags.Bool("enable-ztunnel", false, "Use zTunnel as Cilium's encryption infrastructure")
+	flags.Bool("enable-ztunnel-spire", false, "Use SPIRE for zTunnel certificate management instead of the built-in CA")
 	flags.Int("ztunnel-endpoint-event-channel-buffer-size", 1, "Buffer size for the ztunnel endpoint event channel")
 	flags.MarkHidden("ztunnel-endpoint-event-channel-buffer-size")
 	flags.String("ztunnel-cleanup-state-path", DefaultCleanupStatePath, "Path to store ztunnel enrolled pod state for cleanup on feature disable")

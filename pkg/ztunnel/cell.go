@@ -9,6 +9,7 @@ import (
 	"github.com/cilium/hive/cell"
 
 	"github.com/cilium/cilium/pkg/clustermesh"
+	"github.com/cilium/cilium/pkg/ztunnel/ca"
 	"github.com/cilium/cilium/pkg/ztunnel/cleanup"
 	"github.com/cilium/cilium/pkg/ztunnel/config"
 	"github.com/cilium/cilium/pkg/ztunnel/reconciler"
@@ -22,6 +23,9 @@ var Cell = cell.Module(
 	"ztunnel related control-plane components",
 	cell.Config(config.DefaultConfig),
 	cell.Invoke(validateConfig),
+
+	// CA server for ztunnel (disabled when SPIRE is enabled)
+	ca.Cell,
 
 	// XDS control plane for ztunnel
 	xds.Cell,
