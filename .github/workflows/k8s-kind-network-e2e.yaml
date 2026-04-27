@@ -17,6 +17,10 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
+      run-id:
+        description: "Run ID of the workflow that uploaded the kubeconfig artifact"
+        required: false
+        default: ''
   push:
     branches:
       - v1.19
@@ -25,8 +29,11 @@ on:
 permissions:
   ### ACN CHANGE ###
   # Need statuses to report back to PR
+  # Need actions:read to download artifacts from other workflow runs
   id-token: write
+  actions: read
   contents: read
+  pull-requests: read
   statuses: write
 
 
@@ -90,6 +97,91 @@ jobs:
           filters: |
             src:
               - '!(test|Documentation)/**'
+
+  ### Separate job for external (AKS) clusters ###
+  kubernetes-e2e-external:
+    env:
+      job_name: "Test on External Cluster"
+      KUBECONFIG: ${{ github.workspace }}/kubeconfig
+    if: ${{ inputs.run-id != '' }}
+    runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-24.04' }}
+    timeout-minutes: 90
+    name: Test on External Cluster
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.SHA || github.sha }}
+          persist-credentials: false
+
+      - name: Set Environment Variables
+        uses: ./.github/actions/set-env-variables
+
+      - name: Download kubeconfig artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kubeconfig
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up environment (download Kubernetes dependencies)
+        run: |
+          TMP_DIR=$(mktemp -d)
+          # Test binaries
+          curl -L https://dl.k8s.io/${{ env.KIND_K8S_VERSION }}/kubernetes-test-linux-amd64.tar.gz -o ${TMP_DIR}/kubernetes-test-linux-amd64.tar.gz
+          tar -xvzf ${TMP_DIR}/kubernetes-test-linux-amd64.tar.gz \
+            --directory ${TMP_DIR} \
+            --strip-components=3 kubernetes/test/bin/ginkgo kubernetes/test/bin/e2e.test
+          # kubectl
+          curl -L https://dl.k8s.io/${{ env.KIND_K8S_VERSION }}/bin/linux/amd64/kubectl -o ${TMP_DIR}/kubectl
+          # Install
+          sudo cp ${TMP_DIR}/ginkgo /usr/local/bin/ginkgo
+          sudo cp ${TMP_DIR}/e2e.test /usr/local/bin/e2e.test
+          sudo cp ${TMP_DIR}/kubectl /usr/local/bin/kubectl
+          sudo chmod +x /usr/local/bin/ginkgo /usr/local/bin/e2e.test /usr/local/bin/kubectl
+          sudo rm -rf ${TMP_DIR}
+
+      - name: Run Kubernetes sig-network test
+        run: |
+          mkdir -p _artifacts
+          cp ${{ env.KUBECONFIG }} _artifacts/kubeconfig.conf
+
+          # LoadBalancer: AKS BYO-CNI clusters may not have full Azure LB integration
+          SKIP_FLAG="Alpha|Beta|Experimental|Federation|PerformanceDNS|Disruptive|Serial|KubeProxy|kube-proxy|ExternalIP|LoadBalancer|GCE|Netpol|NetworkPolicy|rejected|externalTrafficPolicy|SCTPConnectivity"
+
+          export KUBERNETES_CONFORMANCE_TEST='y'
+          export E2E_REPORT_DIR=${PWD}/_artifacts
+          /usr/local/bin/ginkgo --nodes=10                \
+            --focus="\[sig-network\]"     \
+            --skip="${SKIP_FLAG}"   \
+            /usr/local/bin/e2e.test                       \
+            --                                            \
+            --kubeconfig=${PWD}/_artifacts/kubeconfig.conf     \
+            --provider=skeleton                           \
+            --dump-logs-on-failure=true                   \
+            --report-dir=${E2E_REPORT_DIR}                \
+            --disable-log-dump=true
+
+      - name: Report status to PR
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            const contextName = 'K8s Network E2E tests and kube-apiserver HA / AKS External Cluster';
+            const description = state === 'success'
+              ? 'K8s Network E2E tests and kube-apiserver HA passed on AKS'
+              : 'K8s Network E2E tests and kube-apiserver HA failed on AKS';
+
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: '${{ inputs.SHA }}',
+              state: state,
+              context: contextName,
+              description: description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+  ### END CHANGE ###
 
   kubernetes-e2e:
     name: K8s Network E2E tests

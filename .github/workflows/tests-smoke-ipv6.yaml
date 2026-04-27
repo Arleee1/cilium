@@ -13,6 +13,10 @@ on:
       SHA:
         description: "SHA under test (head of the PR branch)."
         required: true
+      run-id:
+        description: "Run ID of the workflow that uploaded the kubeconfig artifact"
+        required: false
+        default: ''
       extra-args:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
@@ -25,8 +29,11 @@ on:
 permissions:
   ### ACN CHANGE ###
   # Need statuses to report back to PR
+  # Need actions:read to download artifacts from other workflow runs
   id-token: write
+  actions: read
   contents: read
+  pull-requests: read
   statuses: write
 
 concurrency:
@@ -95,6 +102,56 @@ jobs:
             src:
               - '!(test|Documentation)/**'
               - '!**/*.md'
+
+  ### Separate job for external (AKS) clusters ###
+  # This job runs the actual smoke tests against a pre-existing AKS cluster,
+  # just runs the conformance validation.
+  conformance-test-external:
+    env:
+      job_name: "Test on External Cluster"
+      KUBECONFIG: ${{ github.workspace }}/kubeconfig
+    if: ${{ inputs.run-id != '' }}
+    runs-on: ubuntu-latest
+    name: Test on External Cluster
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.SHA || github.sha }}
+          persist-credentials: false
+
+      - name: Download kubeconfig artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kubeconfig
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run conformance test (e.g. connectivity check without external 1.1.1.1 and www.google.com)
+        run: |
+          kubectl apply -f ${{ env.CONFORMANCE_TEMPLATE }}
+          kubectl wait --for=condition=Available --all deployment --timeout=${{ env.TIMEOUT }}
+
+      - name: Report status to PR
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            const contextName = 'Smoke Test with IPv6 / AKS External Cluster';
+            const description = state === 'success'
+              ? 'Smoke Test with IPv6 passed on AKS'
+              : 'Smoke Test with IPv6 failed on AKS';
+
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: '${{ inputs.SHA }}',
+              state: state,
+              context: contextName,
+              description: description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+  ### END CHANGE ###
 
   conformance-test-ipv6:
     env:

@@ -13,6 +13,10 @@ on:
       SHA:
         description: "SHA under test (head of the PR branch)."
         required: true
+      run-id:
+        description: "Run ID of the workflow that uploaded the kubeconfig artifact"
+        required: false
+        default: ''
       extra-args:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
@@ -27,8 +31,11 @@ on:
 permissions:
   ### ACN CHANGE ###
   # Need statuses to report back to PR
+  # Need actions:read to download artifacts from other workflow runs
   id-token: write
+  actions: read
   contents: read
+  pull-requests: read
   statuses: write
 
 concurrency:
@@ -123,6 +130,83 @@ jobs:
         run: |
           make -C install/kubernetes
           test -z "$(git status --porcelain)" || (echo "please run 'make -C install/kubernetes' and submit your changes"; exit 1)
+
+  ### Separate job for external (AKS) clusters ###
+  # This job runs the actual smoke tests against a pre-existing AKS cluster,
+  # just runs the conformance + prometheus validation.
+  conformance-test-external:
+    env:
+      job_name: "Test on External Cluster"
+      KUBECONFIG: ${{ github.workspace }}/kubeconfig
+    if: ${{ inputs.run-id != '' }}
+    runs-on: ubuntu-latest
+    name: Test on External Cluster
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.SHA || github.sha }}
+          persist-credentials: false
+
+      - name: Download kubeconfig artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kubeconfig
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run conformance test (e.g. connectivity check)
+        run: |
+          kubectl apply -f ${{ env.CONFORMANCE_TEMPLATE }}
+          kubectl wait --for=condition=Available --all deployment --timeout=${{ env.TIMEOUT }}
+
+      - name: Check prometheus metrics
+        if: ${{ success() }}
+        continue-on-error: true
+        run: |
+          cd $HOME
+          cilium_pod=$(kubectl -n kube-system get po --field-selector=status.phase==Running -l 'k8s-app=cilium' -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n kube-system port-forward ${cilium_pod} 9962:9962 &
+          PF_AGENT_PID=$!
+          sleep 2
+          curl -s http://localhost:9962/metrics > metrics-agent.prom
+          kill $PF_AGENT_PID || true
+
+          operator_pod=$(kubectl -n kube-system get po --field-selector=status.phase==Running -l 'io.cilium/app=operator' -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n kube-system port-forward ${operator_pod} 9963:9963 &
+          PF_OPERATOR_PID=$!
+          sleep 2
+          curl -s http://localhost:9963/metrics > metrics-operator.prom
+          kill $PF_OPERATOR_PID || true
+
+          curl -sSL --remote-name-all https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/{prometheus-${PROM_VERSION}.linux-amd64.tar.gz,sha256sums.txt}
+          sha256sum --check --ignore-missing sha256sums.txt
+          tar -xzvf prometheus-${PROM_VERSION}.linux-amd64.tar.gz prometheus-${PROM_VERSION}.linux-amd64/promtool
+          rm -f prometheus-${PROM_VERSION}.linux-amd64.tar.gz
+          sudo mv prometheus-${PROM_VERSION}.linux-amd64/promtool /usr/bin
+          cat metrics-agent.prom | promtool check metrics
+          cat metrics-operator.prom | promtool check metrics
+
+      - name: Report status to PR
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            const contextName = 'Smoke Test / AKS External Cluster';
+            const description = state === 'success'
+              ? 'Smoke tests passed on AKS'
+              : 'Smoke tests failed on AKS';
+
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: '${{ inputs.SHA }}',
+              state: state,
+              context: contextName,
+              description: description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+  ### END CHANGE ###
 
   conformance-test:
     env:
