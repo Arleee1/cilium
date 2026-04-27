@@ -545,3 +545,64 @@ func requireRule(t *testing.T, rules []string, expected ...string) {
 	}
 	require.Failf(t, "Rule not found", "rule containing '%s' not found in ruleset:\n%s", expectedRule, strings.Join(rules, "\n"))
 }
+
+// TestPrivilegedCleanupWithContinue tests the CleanupWithContinue function.
+func TestPrivilegedCleanupWithContinue(t *testing.T) {
+	testutils.PrivilegedTest(t)
+
+	ns := netns.NewNetNS(t)
+	ns.Do(func() error {
+		link, err := safenetlink.LinkByName("lo")
+		require.NoError(t, err)
+		require.NoError(t, netlink.LinkSetUp(link))
+
+		// Create rules
+		err = CreateInPodRules(slog.Default(), true, true)
+		require.NoError(t, err)
+
+		// Cleanup with continue should work
+		err = CleanupWithContinue(slog.Default(), true, true)
+		require.NoError(t, err)
+
+		// Verify chains are deleted by trying to list them (should fail)
+		for _, table := range []string{"mangle", "nat"} {
+			for _, chain := range []string{InpodPreroutingChain, InpodOutputChain} {
+				_, listErr := exec.WithTimeout(defaults.ExecTimeout, "iptables", "-t", table, "-L", chain, "-n").Output(slog.Default(), false)
+				require.Error(t, listErr, "Chain %s should not exist in IPv4 %s table after cleanup", chain, table)
+			}
+		}
+
+		return nil
+	})
+}
+
+// TestPrivilegedCleanupWithContinueIdempotency tests that CleanupWithContinue
+// is idempotent and can be called multiple times without error.
+func TestPrivilegedCleanupWithContinueIdempotency(t *testing.T) {
+	testutils.PrivilegedTest(t)
+
+	ns := netns.NewNetNS(t)
+	ns.Do(func() error {
+		link, err := safenetlink.LinkByName("lo")
+		require.NoError(t, err)
+		require.NoError(t, netlink.LinkSetUp(link))
+
+		// Create rules
+		err = CreateInPodRules(slog.Default(), true, true)
+		require.NoError(t, err)
+
+		// First cleanup
+		err = CleanupWithContinue(slog.Default(), true, true)
+		require.NoError(t, err)
+
+		// Second cleanup should not error
+		err = CleanupWithContinue(slog.Default(), true, true)
+		require.NoError(t, err)
+
+		// Third cleanup should not error
+		err = CleanupWithContinue(slog.Default(), true, true)
+		require.NoError(t, err)
+
+		return nil
+	})
+}

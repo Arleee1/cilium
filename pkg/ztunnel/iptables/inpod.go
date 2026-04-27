@@ -454,6 +454,33 @@ func deleteInPodMarkRule(ipv4Enabled, ipv6Enabled bool) error {
 	return nil
 }
 
+// CleanupWithContinue removes all ztunnel rules, continuing on individual failures.
+// It collects all errors and returns them joined together, allowing cleanup to proceed
+// even if some operations fail.
+func CleanupWithContinue(logger *slog.Logger, ipv4Enabled, ipv6Enabled bool) error {
+	var errs []error
+
+	// Try to delete chains first (this includes jump rules)
+	if err := deleteInPodChains(logger, ipv4Enabled, ipv6Enabled); err != nil {
+		logger.Warn("Failed to delete iptables chains", "error", err)
+		errs = append(errs, fmt.Errorf("delete chains: %w", err))
+	}
+
+	// Try to delete mark rules
+	if err := deleteInPodMarkRule(ipv4Enabled, ipv6Enabled); err != nil {
+		logger.Warn("Failed to delete mark rules", "error", err)
+		errs = append(errs, fmt.Errorf("delete mark rules: %w", err))
+	}
+
+	// Try to delete loopback routes
+	if err := deleteLoopbackRoute(ipv4Enabled, ipv6Enabled); err != nil {
+		logger.Warn("Failed to delete loopback routes", "error", err)
+		errs = append(errs, fmt.Errorf("delete loopback routes: %w", err))
+	}
+
+	return errors.Join(errs...)
+}
+
 func deleteInPodChains(logger *slog.Logger, ipv4Enabled, ipv6Enabled bool) error {
 	var ipt4, ipt6 *iptables.IPTables
 	var err error

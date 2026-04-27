@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sync"
+	"time"
 
 	"github.com/cilium/hive/cell"
 	"golang.org/x/sys/unix"
@@ -22,6 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/netns"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/ztunnel/cleanup"
 	"github.com/cilium/cilium/pkg/ztunnel/config"
 	"github.com/cilium/cilium/pkg/ztunnel/iptables"
 	"github.com/cilium/cilium/pkg/ztunnel/pb"
@@ -144,6 +146,11 @@ type serverParams struct {
 
 	EndpointManager endpointmanager.EndpointManager
 
+	// CleanupController persists enrollment state for crash-recovery
+	// and feature-disable cleanup. Optional so unit tests / disabled-state
+	// configurations can omit it.
+	CleanupController *cleanup.CleanupController `optional:"true"`
+
 	// ZDSUnixAddr overrides the default ZDS unix socket address.
 	// If empty, config.DefaultZtunnelUnixAddress is used.
 	// This field is intended for testing purposes only.
@@ -175,6 +182,10 @@ type Server struct {
 	updates               chan zdsUpdate // updates to send to ztunnel
 	initialSnapshotSeeded chan struct{}
 	metrics               *Metrics
+
+	// cleanupController persists enrollment state for crash recovery
+	// and feature-disable cleanup. May be nil if cleanup is not enabled.
+	cleanupController *cleanup.CleanupController
 }
 
 type zdsUpdate struct {
@@ -200,6 +211,7 @@ func newZDSServer(p serverParams) serverOut {
 		endpointCache:         make(map[uint16]*endpoint.Endpoint),
 		initialSnapshotSeeded: make(chan struct{}),
 		metrics:               p.Metrics,
+		cleanupController:     p.CleanupController,
 	}
 
 	zdsUnixAddr := defaultZDSUnixAddress
@@ -405,7 +417,38 @@ func (s *Server) EnrollEndpoint(ep *endpoint.Endpoint) error {
 	s.endpointCacheMutex.Lock()
 	s.endpointCache[ep.GetID16()] = ep
 	s.endpointCacheMutex.Unlock()
+
+	// Persist enrollment state for crash recovery / feature-disable cleanup.
+	if s.cleanupController != nil {
+		if err := s.persistEnrolledState(ep); err != nil {
+			s.logger.Warn("Failed to persist enrollment state",
+				logfields.EndpointID, ep.GetID16(),
+				logfields.Error, err,
+			)
+		}
+	}
+
 	return nil
+}
+
+// persistEnrolledState saves the enrollment state to disk so that
+// CleanupController can clean up iptables rules across agent restarts
+// or when the ztunnel feature is disabled.
+func (s *Server) persistEnrolledState(ep *endpoint.Endpoint) error {
+	pod := ep.GetPod()
+	if pod == nil {
+		return fmt.Errorf("endpoint has no pod metadata")
+	}
+
+	state := cleanup.EnrolledPodState{
+		PodUID:     string(pod.GetUID()),
+		Namespace:  ep.GetK8sNamespace(),
+		PodName:    ep.GetK8sPodName(),
+		NetnsPath:  ep.GetContainerNetnsPath(),
+		EnrolledAt: time.Now(),
+	}
+
+	return s.cleanupController.GetStateStore().MarkEnrolled(state)
 }
 
 func (s *Server) DisenrollEndpoint(ep *endpoint.Endpoint) error {
@@ -458,6 +501,17 @@ func (s *Server) DisenrollEndpoint(ep *endpoint.Endpoint) error {
 	s.endpointCacheMutex.Lock()
 	delete(s.endpointCache, ep.GetID16())
 	s.endpointCacheMutex.Unlock()
+
+	// Remove from persisted state so CleanupController doesn't try to clean
+	// up rules for a pod that is already disenrolled.
+	if s.cleanupController != nil {
+		if err := s.cleanupController.GetStateStore().MarkDisenrolled(string(pod.GetUID())); err != nil {
+			s.logger.Warn("Failed to remove enrollment state",
+				logfields.EndpointID, ep.GetID16(),
+				logfields.Error, err,
+			)
+		}
+	}
 
 	return nil
 }
