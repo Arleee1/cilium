@@ -349,10 +349,17 @@ func (p *Proxy) ChangeLogLevel(level slog.Level) {
 	}
 }
 
-// GetStatusModel returns the proxy status as API model
+// GetStatusModel returns the proxy status as API model.
+// Returns nil when the L7 proxy is not enabled, so that status consumers
+// (including cilium connectivity test auto-detection) do not incorrectly
+// interpret the proxy as available for L7 policy enforcement.
 func (p *Proxy) GetStatusModel() *models.ProxyStatus {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
+
+	if !p.enabled {
+		return nil
+	}
 
 	rangeMin, rangeMax, nPorts := p.proxyPorts.GetStatusInfo()
 
