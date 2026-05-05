@@ -21,6 +21,7 @@ func CreateManagerEndpoint(name string, identity int64) capi_v2a1.CoreCiliumEndp
 	return capi_v2a1.CoreCiliumEndpoint{
 		Name:       name,
 		IdentityID: identity,
+		PodUID:     name + "-uid",
 	}
 }
 
