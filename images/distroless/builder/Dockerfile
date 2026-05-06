@@ -10,7 +10,7 @@ ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:5569a29cea6b3ad50aeb03102aaf3
 ARG CILIUM_RUNTIME_IMAGE=acnpublic.azurecr.io/cilium/cilium-runtime-distroless:fa5ef9bae30b897842f38cfa3978df794287d1a6
 ARG TESTER_IMAGE=quay.io/cilium/image-tester:dd09c8d3ef349a909fbcdc99279516baef153f22@sha256:c056d064cb47c97acd607343db5457e1d49d9338d6d8a87e93e23cc93f052c73
 ARG GOLANG_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.26.1-1@sha256:df6482f65c8186602a54343b27e17fcb22c6b9ea2d8a6036ccf17b609294176e
-ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:9f1bfe736009afb1fbb562718bbc42ea07d37d8e@sha256:a666a7a01a2dc610c3ab6e32f25ca5e294201f3cbbc01f233320c527955deee3
+ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:19.1.7-1775844888-ebe5854@sha256:745aef32b65911d14a8557014d0ae33c6ac0ed975b008e4721a3adf3ebda009a
 
 FROM ${COMPILERS_IMAGE} AS compilers-image
 
