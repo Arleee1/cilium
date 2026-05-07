@@ -53,6 +53,19 @@ RUN dpkg -i /iptables/*\.deb && rm -rf /iptables
 
 FROM ${MARINER_IMAGE} AS mariner-fs
 
+# Bootstrap CA certificates: the base image has no CA certs so tdnf cannot
+# verify SSL when reaching the package repos. Temporarily disable sslverify
+# in repo configs, install ca-certificates, then re-enable.
+RUN sed -i 's/sslverify=1/sslverify=0/g' /etc/yum.repos.d/*.repo 2>/dev/null || true && \
+    for repo in /etc/yum.repos.d/*.repo; do \
+      if ! grep -q 'sslverify' "$repo"; then \
+        sed -i '/^\[/a sslverify=0' "$repo"; \
+      fi; \
+    done && \
+    tdnf install -y --nogpgcheck ca-certificates && \
+    sed -i '/^sslverify=0$/d' /etc/yum.repos.d/*.repo 2>/dev/null || true && \
+    sed -i 's/sslverify=0/sslverify=1/g' /etc/yum.repos.d/*.repo 2>/dev/null || true
+
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime \
     images/runtime/install-runtime-deps.sh mariner
