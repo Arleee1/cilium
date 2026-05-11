@@ -12,8 +12,8 @@ ARG UBUNTU_IMAGE=docker.io/library/ubuntu:22.04@sha256:0e5e4a57c2499249aafc3b40f
 ARG MARINER_IMAGE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:c09a4e011a092a45b5c46ac5633253eb1e1106df028912b89cbe225d9061ef0b
 
 ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:19.1.7-1775844888-ebe5854@sha256:745aef32b65911d14a8557014d0ae33c6ac0ed975b008e4721a3adf3ebda009a
-ARG CILIUM_BPFTOOL_IMAGE=quay.io/cilium/cilium-bpftool:0db3a73729ceb42e947d826bb96a655be79e5317@sha256:de23c9546c4eafab33f75d6f5d129947bbbafc132dbd113c0cecc9a61929e6b0
-ARG CILIUM_IPTABLES_IMAGE=quay.io/cilium/iptables:67f517af50e18f64cd12625021f1c39246bb4f92@sha256:d075f03e89aacf51908346ec8ed5d251b8d3ad528ce30a710fcd074cdf91f11d
+ARG CILIUM_BPFTOOL_IMAGE=quay.io/cilium/cilium-bpftool:7.4.0-1764684255-8506ae2@sha256:82b0f05c513ccaa1916537b0784df4dda4ea23f0ffc46d4d8043b74ef35ee19a
+ARG CILIUM_IPTABLES_IMAGE=quay.io/cilium/iptables:1.8.8-1-1764684255-8506ae2@sha256:038abab3de749feda1f9dbc0f86ed5777e6eb15f6f5f19fa2fd36322c8a7e1bd
 
 FROM ${CILIUM_LLVM_IMAGE} AS llvm-dist
 FROM ${CILIUM_BPFTOOL_IMAGE} AS bpftool-dist
@@ -52,19 +52,6 @@ COPY --from=iptables-dist /iptables /iptables
 RUN dpkg -i /iptables/*\.deb && rm -rf /iptables
 
 FROM ${MARINER_IMAGE} AS mariner-fs
-
-# Bootstrap CA certificates: the base image has no CA certs so tdnf cannot
-# verify SSL when reaching the package repos. Temporarily disable sslverify
-# in repo configs, install ca-certificates, then re-enable.
-RUN sed -i 's/sslverify=1/sslverify=0/g' /etc/yum.repos.d/*.repo 2>/dev/null || true && \
-    for repo in /etc/yum.repos.d/*.repo; do \
-      if ! grep -q 'sslverify' "$repo"; then \
-        sed -i '/^\[/a sslverify=0' "$repo"; \
-      fi; \
-    done && \
-    tdnf install -y --nogpgcheck ca-certificates && \
-    sed -i '/^sslverify=0$/d' /etc/yum.repos.d/*.repo 2>/dev/null || true && \
-    sed -i 's/sslverify=0/sslverify=1/g' /etc/yum.repos.d/*.repo 2>/dev/null || true
 
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/runtime \
