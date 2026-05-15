@@ -97,6 +97,7 @@ func TestReadCNIConfENIWithPlugins(t *testing.T) {
 	netConf1 := NetConf{
 		NetConf: cnitypes.NetConf{
 			CNIVersion: "0.3.1",
+			Name:       "cilium",
 			Type:       "cilium-cni",
 		},
 		ENI: eniTypes.ENISpec{
@@ -201,6 +202,7 @@ func TestReadCNIConfENIv2WithPlugins(t *testing.T) {
 	netConf1 := NetConf{
 		NetConf: cnitypes.NetConf{
 			CNIVersion: "0.3.1",
+			Name:       "cilium",
 			Type:       "cilium-cni",
 		},
 		ENI: eniTypes.ENISpec{
@@ -245,6 +247,7 @@ func TestReadCNIConfAzurev2WithPlugins(t *testing.T) {
 	netConf1 := NetConf{
 		NetConf: cnitypes.NetConf{
 			CNIVersion: "0.3.1",
+			Name:       "cilium",
 			Type:       "cilium-cni",
 		},
 		Azure: azureTypes.AzureSpec{
@@ -278,6 +281,7 @@ func TestReadCNIConfIPAMType(t *testing.T) {
 	netConf := NetConf{
 		NetConf: cnitypes.NetConf{
 			CNIVersion: "0.3.1",
+			Name:       "cilium",
 			Type:       "cilium-cni",
 		},
 		IPAM: IPAM{

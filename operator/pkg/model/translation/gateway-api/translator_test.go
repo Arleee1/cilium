@@ -383,6 +383,34 @@ func Test_getService(t *testing.T) {
 	}
 }
 
+func Test_translator_Translate_DisableAzureLBFloatingIP(t *testing.T) {
+	testName := "basic_http_listener_disable_azure_lb_floating_ip"
+
+	cfg := translation.Config{}
+	readInput(t, fmt.Sprintf("testdata/%s/config-input.yaml", testName), &cfg)
+	trans := &gatewayAPITranslator{
+		cecTranslator: translation.NewCECTranslator(cfg),
+		cfg:           cfg,
+	}
+
+	input := &model.Model{}
+	readInput(t, fmt.Sprintf("testdata/%s/input.yaml", testName), input)
+	expectedCEC := &ciliumv2.CiliumEnvoyConfig{}
+	readOutput(t, fmt.Sprintf("testdata/%s/cec-output.yaml", testName), expectedCEC)
+	expectedService := &corev1.Service{}
+	readOutput(t, fmt.Sprintf("testdata/%s/service-output.yaml", testName), expectedService)
+
+	cec, svc, _, err := trans.Translate(input)
+
+	require.NoError(t, err)
+	require.Equal(t, expectedService, svc, "Service mismatch")
+
+	diffOutput := cmp.Diff(expectedCEC, cec, protocmp.Transform())
+	if len(diffOutput) != 0 {
+		t.Errorf("CiliumEnvoyConfigs did not match:\n%s\n", diffOutput)
+	}
+}
+
 func readInput(t *testing.T, file string, obj any) {
 	inputYaml, err := os.ReadFile(file)
 	require.NoError(t, err)

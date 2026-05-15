@@ -15,6 +15,7 @@ import (
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	"github.com/cilium/cilium/pkg/identity"
 	identitycell "github.com/cilium/cilium/pkg/identity/cache/cell"
+	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/ipcache"
 	ipcachetypes "github.com/cilium/cilium/pkg/ipcache/types"
 	"github.com/cilium/cilium/pkg/labels"
@@ -22,6 +23,7 @@ import (
 	ipcachemap "github.com/cilium/cilium/pkg/maps/ipcache"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/node"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
 )
 
@@ -51,6 +53,7 @@ type localIdentityRestorerParams struct {
 	IdentityAllocator identitycell.CachingIdentityAllocator
 	NodeLocalStore    *node.LocalNodeStore
 	MetricsRegistry   *metrics.Registry
+	DaemonConfig      *option.DaemonConfig
 }
 
 type LocalIdentityRestorer struct {
@@ -216,6 +219,17 @@ func (d *LocalIdentityRestorer) restoreIPCache(ipCache *ipcache.IPCache, localPr
 	for prefix, nid := range localPrefixes {
 		// Restore Ingress IPs as necessary
 		if nid == identity.ReservedIdentityIngress {
+			
+			// Skip ingress IP restoration with delegated IPAM, to avoid restoring
+			// external stale IP's. If a Gateway IP is needed, we issue an idempotent
+			// call during allocate ingress IP. Relevant when we've had a gateway IP,
+			// Gateway API is turned off, and agent restarts.
+			if d.params.DaemonConfig.IPAM == ipamOption.IPAMDelegatedPlugin {
+				d.params.Logger.Debug("Skipping ingress IP restoration with delegated IPAM",
+					logfields.Ingress, prefix)
+				continue
+			}
+
 			metaUpdates = append(metaUpdates, ipcache.MU{
 				Prefix:   cmtypes.NewLocalPrefixCluster(prefix),
 				Source:   source.Restored,

@@ -344,9 +344,31 @@ func (t *gatewayAPITranslator) desiredEndpointSlice(owner *model.FullyQualifiedR
 }
 
 func (t *gatewayAPITranslator) toServiceAnnotations(annotations map[string]string, params *model.Service) map[string]string {
+	// Add Azure LB floating IP disable annotation if configured for LoadBalancer services.
+	// When Azure LB uses floating IP (DSR mode), external traffic fails because Envoy
+	// terminates the TCP connection and creates a new upstream connection, causing the
+	// response to have src=NodeIP instead of src=VIP, which the client rejects.
+	// Disabling floating IP makes Azure LB perform DNAT (dst=VIP -> dst=NodeIP), so
+	// packets arrive with NodeIP as destination and the return path works naturally.
+	// Client IP is still preserved.
+	// Note: This uses the operator-level config (t.cfg.ServiceConfig), not the
+	// per-GatewayClass params, so it must be checked before the params nil guard.
+	serviceType := string(corev1.ServiceTypeLoadBalancer)
+	if params != nil && params.Type != "" {
+		serviceType = params.Type
+	}
+	if serviceType == string(corev1.ServiceTypeLoadBalancer) &&
+		t.cfg.ServiceConfig.DisableAzureLBFloatingIP {
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations["service.beta.kubernetes.io/azure-disable-load-balancer-floating-ip"] = "true"
+	}
+
 	if params == nil {
 		return annotations
 	}
+
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}

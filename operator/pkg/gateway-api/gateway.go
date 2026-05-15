@@ -65,6 +65,17 @@ func newGatewayReconciler(mgr ctrl.Manager, translator translation.Translator, l
 	}
 }
 
+func removeGVKByKind(gvks []schema.GroupVersionKind, kind string) []schema.GroupVersionKind {
+	filtered := make([]schema.GroupVersionKind, 0, len(gvks))
+	for _, gvk := range gvks {
+		if gvk.Kind == kind {
+			continue
+		}
+		filtered = append(filtered, gvk)
+	}
+	return filtered
+}
+
 // SetupWithManager sets up the controller with the Manager.
 // The reconciler will be triggered by Gateway, or any cilium-managed GatewayClass events
 func (r *gatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -244,6 +255,18 @@ func (r *gatewayReconciler) enqueueRequestForOwningGRPCRoute() handler.EventHand
 // enqueueRequestForBackendService returns an event handler that, when passed a Service, returns reconcile.Requests
 // for all Cilium-relevant Gateways where that Service is used as a backend for a HTTPRoute that is attached to that Gateway.
 func (r *gatewayReconciler) enqueueRequestForBackendService() handler.EventHandler {
+
+	// Check if TLSRoute CRD is installed; skip TLSRoute listing if not,
+	// to avoid errors when the CRD and its indexes are not registered.
+	var tlsRouteEnabled bool
+
+	for _, gvk := range r.installedCRDs {
+		if gvk.Kind == helpers.TLSRouteKind {
+			tlsRouteEnabled = true
+			break
+		}
+	}
+
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
 		_, ok := o.(*corev1.Service)
 		if !ok {
@@ -268,11 +291,15 @@ func (r *gatewayReconciler) enqueueRequestForBackendService() handler.EventHandl
 		// Then, fetch all TLSRoutes that reference this service, using the backendServiceIndex
 		tlsrList := &gatewayv1alpha2.TLSRouteList{}
 
-		if err := r.Client.List(ctx, tlsrList, &client.ListOptions{
-			FieldSelector: fields.OneTermEqualSelector(backendServiceTLSRouteIndex, client.ObjectKeyFromObject(o).String()),
-		}); err != nil {
-			scopedLog.Error("Failed to get related HTTPRoutes", logfields.Error, err)
-			return []reconcile.Request{}
+		// Only list TLSRoutes if the TLSRoute CRD is installed, otherwise
+		// the field index will not be registered and the list will fail.
+		if tlsRouteEnabled {
+			if err := r.Client.List(ctx, tlsrList, &client.ListOptions{
+				FieldSelector: fields.OneTermEqualSelector(backendServiceTLSRouteIndex, client.ObjectKeyFromObject(o).String()),
+			}); err != nil {
+				scopedLog.ErrorContext(ctx, "Failed to get related TLSRoutes", logfields.Error, err)
+				return []reconcile.Request{}
+			}
 		}
 
 		grpcRouteList := &gatewayv1.GRPCRouteList{}

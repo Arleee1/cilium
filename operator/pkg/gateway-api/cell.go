@@ -45,6 +45,7 @@ var Cell = cell.Module(
 
 	cell.Config(gatewayApiConfig{
 		EnableGatewayAPISecretsSync:            true,
+		EnableGatewayAPITLSRoute:               true,
 		EnableGatewayAPIProxyProtocol:          false,
 		EnableGatewayAPIAppProtocol:            false,
 		EnableGatewayAPIAlpn:                   false,
@@ -168,12 +169,14 @@ func newGatewayAPIPreconditions(params preconditionParams) (*gatewayAPIPrecondit
 
 type gatewayApiConfig struct {
 	EnableGatewayAPISecretsSync            bool
+	EnableGatewayAPITLSRoute               bool
 	EnableGatewayAPIProxyProtocol          bool
 	EnableGatewayAPIAppProtocol            bool
 	EnableGatewayAPIAlpn                   bool
 	GatewayAPIServiceExternalTrafficPolicy string
 	GatewayAPISecretsNamespace             string
 	GatewayAPIXffNumTrustedHops            uint32
+	GatewayAPIDisableAzureLBFloatingIP     bool
 
 	GatewayAPIHostnetworkEnabled           bool
 	GatewayAPIHostnetworkNodelabelselector string
@@ -181,6 +184,7 @@ type gatewayApiConfig struct {
 
 func (r gatewayApiConfig) Flags(flags *pflag.FlagSet) {
 	flags.Bool("enable-gateway-api-secrets-sync", r.EnableGatewayAPISecretsSync, "Enables fan-in TLS secrets sync from multiple namespaces to singular namespace (specified by gateway-api-secrets-namespace flag)")
+	flags.Bool("enable-gateway-api-tlsroute", r.EnableGatewayAPITLSRoute, "Enables TLSRoute support in Gateway API controller, including TLSRoute indexes and watches")
 	flags.Bool("enable-gateway-api-proxy-protocol", r.EnableGatewayAPIProxyProtocol, "Enable proxy protocol for all GatewayAPI listeners. Note that _only_ Proxy protocol traffic will be accepted once this is enabled.")
 	flags.Bool("enable-gateway-api-app-protocol", r.EnableGatewayAPIAppProtocol, "Enables Backend Protocol selection (GEP-1911) for Gateway API via appProtocol")
 	flags.Bool("enable-gateway-api-alpn", r.EnableGatewayAPIAlpn, "Enables exposing ALPN with HTTP2 and HTTP/1.1 support for Gateway API")
@@ -189,6 +193,9 @@ func (r gatewayApiConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("gateway-api-secrets-namespace", r.GatewayAPISecretsNamespace, "Namespace having tls secrets used by CEC for Gateway API")
 	flags.Bool("gateway-api-hostnetwork-enabled", r.GatewayAPIHostnetworkEnabled, "Exposes Gateway listeners on the host network.")
 	flags.String("gateway-api-hostnetwork-nodelabelselector", r.GatewayAPIHostnetworkNodelabelselector, "Label selector that matches the nodes where the gateway listeners should be exposed. It's a list of comma-separated key-value label pairs. e.g. 'kubernetes.io/os=linux,kubernetes.io/hostname=kind-worker'")
+	flags.Bool("gateway-api-disable-azure-lb-floating-ip", r.GatewayAPIDisableAzureLBFloatingIP, "Disables Azure Load Balancer floating IP (DSR mode) for Gateway LoadBalancer services. "+
+		"When Azure LB uses floating IP, Envoy L7 proxy terminates the TCP connection and responds with src=NodeIP instead of src=VIP, causing the client to reject the response. "+
+		"Disabling floating IP makes Azure LB perform DNAT so packets arrive with NodeIP as destination and the return path works naturally while still preserving client IP.")
 }
 
 type gatewayAPIParams struct {
@@ -220,6 +227,13 @@ func initGatewayAPIController(params gatewayAPIParams) error {
 		installedKinds = append(installedKinds, mcsapiv1alpha1.SchemeGroupVersion.WithKind(helpers.ServiceImportKind))
 	}
 
+	// If TLSRoute is disabled via flag, remove it from installedKinds before
+	// registering types to the scheme. This prevents the reconciler from
+	// attempting to list TLSRoutes when the CRD version is not served.
+	if !params.GatewayApiConfig.EnableGatewayAPITLSRoute {
+		installedKinds = removeGVKByKind(installedKinds, helpers.TLSRouteKind)
+	}
+
 	if err := registerGatewayAPITypesToScheme(params.Scheme, installedKinds); err != nil {
 		return err
 	}
@@ -231,7 +245,8 @@ func initGatewayAPIController(params gatewayAPIParams) error {
 	cfg := translation.Config{
 		SecretsNamespace: params.GatewayApiConfig.GatewayAPISecretsNamespace,
 		ServiceConfig: translation.ServiceConfig{
-			ExternalTrafficPolicy: params.GatewayApiConfig.GatewayAPIServiceExternalTrafficPolicy,
+			ExternalTrafficPolicy:    params.GatewayApiConfig.GatewayAPIServiceExternalTrafficPolicy,
+			DisableAzureLBFloatingIP: params.GatewayApiConfig.GatewayAPIDisableAzureLBFloatingIP,
 		},
 		HostNetworkConfig: translation.HostNetworkConfig{
 			Enabled:           params.GatewayApiConfig.GatewayAPIHostnetworkEnabled,

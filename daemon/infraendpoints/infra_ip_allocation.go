@@ -6,6 +6,7 @@ package infraendpoints
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,10 +18,13 @@ import (
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
+	cniInvoke "github.com/containernetworking/cni/pkg/invoke"
+	cniTypesV1 "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/cilium/cilium/daemon/cmd/cni"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/common"
 	linuxrouting "github.com/cilium/cilium/pkg/datapath/linux/routing"
@@ -34,26 +38,29 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/rate"
 	"github.com/cilium/cilium/pkg/resiliency"
 	"github.com/cilium/cilium/pkg/time"
+	cnitypes "github.com/cilium/cilium/plugins/cilium-cni/types"
 )
 
 type infraIPAllocatorParams struct {
 	cell.In
 
-	Logger         *slog.Logger
-	JobGroup       job.Group
-	DaemonConfig   *option.DaemonConfig
-	Config         config
-	DB             *statedb.DB
-	Routes         statedb.Table[*datapathTables.Route]
-	NodeAddrs      statedb.Table[datapathTables.NodeAddress]
-	NodeAddressing datapath.NodeAddressing
-	LocalNodeStore *node.LocalNodeStore
-	MTU            mtu.MTU
-	IPAM           *ipam.IPAM
+	Logger           *slog.Logger
+	JobGroup         job.Group
+	DaemonConfig     *option.DaemonConfig
+	Config           config
+	DB               *statedb.DB
+	Routes           statedb.Table[*datapathTables.Route]
+	NodeAddrs        statedb.Table[datapathTables.NodeAddress]
+	NodeAddressing   datapath.NodeAddressing
+	LocalNodeStore   *node.LocalNodeStore
+	MTU              mtu.MTU
+	IPAM             *ipam.IPAM
+	CNIConfigManager cni.CNIConfigManager
 }
 
 type InfraIPAllocator interface {
@@ -65,16 +72,17 @@ var _ InfraIPAllocator = &infraIPAllocator{}
 
 // infraIPAllocator is responsible to create infra related IPs (router, ingress & health)
 type infraIPAllocator struct {
-	logger         *slog.Logger
-	jobGroup       job.Group
-	daemonConfig   *option.DaemonConfig
-	config         config
-	db             *statedb.DB
-	routes         statedb.Table[*datapathTables.Route]
-	nodeAddressing datapath.NodeAddressing
-	localNodeStore *node.LocalNodeStore
-	mtuManager     mtu.MTU
-	ipAllocator    ipamAllocator
+	logger           *slog.Logger
+	jobGroup         job.Group
+	daemonConfig     *option.DaemonConfig
+	config           config
+	db               *statedb.DB
+	routes           statedb.Table[*datapathTables.Route]
+	nodeAddressing   datapath.NodeAddressing
+	localNodeStore   *node.LocalNodeStore
+	mtuManager       mtu.MTU
+	ipAllocator      ipamAllocator
+	cniConfigManager cni.CNIConfigManager
 
 	// healthEndpointRouting is the information required to set up the health
 	// endpoint's routing in ENI or Azure IPAM mode
@@ -90,16 +98,17 @@ type ipamAllocator interface {
 
 func newInfraIPAllocator(params infraIPAllocatorParams) InfraIPAllocator {
 	return &infraIPAllocator{
-		logger:         params.Logger,
-		jobGroup:       params.JobGroup,
-		daemonConfig:   params.DaemonConfig,
-		config:         params.Config,
-		db:             params.DB,
-		routes:         params.Routes,
-		nodeAddressing: params.NodeAddressing,
-		localNodeStore: params.LocalNodeStore,
-		mtuManager:     params.MTU,
-		ipAllocator:    params.IPAM,
+		logger:           params.Logger,
+		jobGroup:         params.JobGroup,
+		daemonConfig:     params.DaemonConfig,
+		config:           params.Config,
+		db:               params.DB,
+		routes:           params.Routes,
+		nodeAddressing:   params.NodeAddressing,
+		localNodeStore:   params.LocalNodeStore,
+		mtuManager:       params.MTU,
+		ipAllocator:      params.IPAM,
+		cniConfigManager: params.CNIConfigManager,
 	}
 }
 
@@ -434,6 +443,15 @@ func (r *infraIPAllocator) allocateIngressIPs(oldV4IngressIP net.IP, oldV6Ingres
 		return nil
 	}
 
+	// When delegated IPAM is configured, allocate ingress IPs via the external CNI IPAM call and skip internal IPAM
+	if r.daemonConfig.IPAM == ipamOption.IPAMDelegatedPlugin {
+		if err := r.allocateIngressIPsWithDelegatedIPAM(newDefaultCNIExec()); err != nil {
+			return fmt.Errorf("delegated IPAM for ingress failed: %w", err)
+		}
+		return nil
+	}
+
+	// Non-delegated IPAM path
 	ingressIPv4 := oldV4IngressIP
 	if r.daemonConfig.EnableIPv4 {
 		var result *ipam.AllocationResult
@@ -542,7 +560,193 @@ func (r *infraIPAllocator) allocateIngressIPs(oldV4IngressIP net.IP, oldV6Ingres
 	return nil
 }
 
+// delegatedIPAMArgs extends cniInvoke.Args to add CNI_NETNS_OVERRIDE=1,
+// bypassing netns validation for IPAM-only operations (no actual network setup).
+type delegatedIPAMArgs cniInvoke.Args
+
+func (a *delegatedIPAMArgs) AsEnv() []string {
+	return append((*cniInvoke.Args)(a).AsEnv(), "CNI_NETNS_OVERRIDE=1")
+}
+
+func newDelegatedIPAMArgs(command, nodeName, cniBinPath string) *delegatedIPAMArgs {
+	return &delegatedIPAMArgs{
+		Command:     command,
+		ContainerID: fmt.Sprintf("cilium-ingress-%s", nodeName),
+		NetNS:       "/proc/1/ns/net",
+		IfName:      "eth0",
+		Path:        cniBinPath,
+		PluginArgs: [][2]string{
+			{"K8S_POD_NAME", fmt.Sprintf("cilium-ingress-%s", nodeName)},
+			{"K8S_POD_NAMESPACE", "kube-system"},
+		},
+	}
+}
+
+// defaultCNIConfPath is the standard location for CNI config with delegated IPAM.
+const defaultCNIConfPath = "/host/etc/cni/net.d/05-cilium.conflist"
+
+// newDefaultCNIExec returns the default CNI executor for delegated plugin calls.
+func newDefaultCNIExec() cniInvoke.Exec {
+	return &cniInvoke.DefaultExec{
+		RawExec: &cniInvoke.RawExec{Stderr: os.Stderr},
+	}
+}
+
+// getCNIConfigForDelegatedIPAM retrieves the CNI configuration for delegated IPAM.
+func (r *infraIPAllocator) getCNIConfigForDelegatedIPAM() (*cnitypes.NetConf, error) {
+	// First, try the custom net conf from cniConfigManager (set via --read-cni-conf)
+	if netConf := r.cniConfigManager.GetCustomNetConf(); netConf != nil {
+		return netConf, nil
+	}
+
+	// Fall back to hardcoded path
+	netConf, err := cnitypes.ReadNetConf(defaultCNIConfPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CNI config from %s: %w", defaultCNIConfPath, err)
+	}
+	return netConf, nil
+}
+
+// allocateIngressIPsWithDelegatedIPAM allocates ingress IPs using the delegated IPAM plugin.
+func (r *infraIPAllocator) allocateIngressIPsWithDelegatedIPAM(cniExec cniInvoke.Exec) error {
+	// Check if ingress IPs are already allocated (e.g., restored from CiliumNode).
+	// If so, skip allocation to avoid leaking IPs via duplicate DelegateAdd calls.
+	localNode, err := r.localNodeStore.Get(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to get local node: %w", err)
+	}
+	existingIPv4 := localNode.IPv4IngressIP
+	existingIPv6 := localNode.IPv6IngressIP
+	needIPv4 := r.daemonConfig.EnableIPv4 && existingIPv4 == nil
+	needIPv6 := r.daemonConfig.EnableIPv6 && existingIPv6 == nil
+
+	// With delegated IPAM, ingress IP restoration is skipped so IPs should be nil here.
+	// The plugin is idempotent and returns existing allocations. This guard prevents
+	// leaking IPs if they're unexpectedly set from another source.
+	if !needIPv4 && !needIPv6 {
+		r.logger.Info("Ingress IPs already allocated, skipping delegated IPAM allocation",
+			logfields.IPv4, existingIPv4,
+			logfields.IPv6, existingIPv6)
+		return nil
+	}
+
+	netConf, err := r.getCNIConfigForDelegatedIPAM()
+	if err != nil {
+		return fmt.Errorf("CNI configuration not available: %w", err)
+	}
+	if netConf.Name == "" {
+		return fmt.Errorf("CNI config missing network name")
+	}
+	if netConf.IPAM.Type == "" {
+		return fmt.Errorf("CNI config missing IPAM type")
+	}
+
+	stdinData, err := json.Marshal(netConf)
+	if err != nil {
+		return fmt.Errorf("failed to marshal CNI config: %w", err)
+	}
+
+	nodeName := nodeTypes.GetName()
+	cniBinPath := r.cniConfigManager.GetDelegatedIPAMCNIBinPath()
+	args := newDelegatedIPAMArgs("ADD", nodeName, cniBinPath)
+
+	pluginPath, err := cniExec.FindInPath(netConf.IPAM.Type, []string{cniBinPath})
+	if err != nil {
+		return fmt.Errorf("failed to find IPAM plugin %s: %w", netConf.IPAM.Type, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ipamRawResult, err := cniInvoke.ExecPluginWithResult(ctx, pluginPath, stdinData, args, cniExec)
+	if err != nil {
+		return fmt.Errorf("delegated IPAM failed: %w", err)
+	}
+
+	ipamResult, err := cniTypesV1.NewResultFromResult(ipamRawResult)
+	if err != nil {
+		return fmt.Errorf("failed to parse IPAM result: %w", err)
+	}
+
+	for _, ipConfig := range ipamResult.IPs {
+		if ipConfig.Address.IP.To4() != nil && r.daemonConfig.EnableIPv4 {
+			r.localNodeStore.Update(func(n *node.LocalNode) { n.IPv4IngressIP = ipConfig.Address.IP })
+			r.logger.Info("Allocated ingress IPv4 via delegated IPAM", logfields.IPAddr, ipConfig.Address.IP)
+		} else if ipConfig.Address.IP.To4() == nil && ipConfig.Address.IP.To16() != nil && r.daemonConfig.EnableIPv6 {
+			r.localNodeStore.Update(func(n *node.LocalNode) { n.IPv6IngressIP = ipConfig.Address.IP })
+			r.logger.Info("Allocated ingress IPv6 via delegated IPAM", logfields.IPAddr, ipConfig.Address.IP)
+		}
+	}
+
+	// Verify that required IPs were actually allocated
+	updatedNode, err := r.localNodeStore.Get(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to get updated local node: %w", err)
+	}
+	if needIPv4 && updatedNode.IPv4IngressIP == nil {
+		return fmt.Errorf("delegated IPAM did not return an IPv4 address")
+	}
+	if needIPv6 && updatedNode.IPv6IngressIP == nil {
+		return fmt.Errorf("delegated IPAM did not return an IPv6 address")
+	}
+
+	return nil
+}
+
+// deallocateIngressIPsWithDelegatedIPAM releases ingress IPs via the delegated IPAM plugin.
+// This is called on startup when gateway is disabled to clean up stale allocations from
+// a previous run when gateway was enabled.
+func (r *infraIPAllocator) deallocateIngressIPsWithDelegatedIPAM(cniExec cniInvoke.Exec) error {
+	r.logger.Info("Starting deallocation of ingress IPs via delegated IPAM")
+
+	netConf, err := r.getCNIConfigForDelegatedIPAM()
+	if err != nil {
+		return fmt.Errorf("CNI configuration not available: %w", err)
+	}
+	if netConf.Name == "" {
+		return fmt.Errorf("CNI config missing network name")
+	}
+	if netConf.IPAM.Type == "" {
+		return fmt.Errorf("CNI config missing IPAM type")
+	}
+
+	stdinData, err := json.Marshal(netConf)
+	if err != nil {
+		return fmt.Errorf("failed to marshal CNI config: %w", err)
+	}
+
+	nodeName := nodeTypes.GetName()
+	cniBinPath := r.cniConfigManager.GetDelegatedIPAMCNIBinPath()
+	args := newDelegatedIPAMArgs("DEL", nodeName, cniBinPath)
+
+	pluginPath, err := cniExec.FindInPath(netConf.IPAM.Type, []string{cniBinPath})
+	if err != nil {
+		return fmt.Errorf("failed to find IPAM plugin %s: %w", netConf.IPAM.Type, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := cniInvoke.ExecPluginWithoutResult(ctx, pluginPath, stdinData, args, cniExec); err != nil {
+		return fmt.Errorf("delegated IPAM deallocation failed: %w", err)
+	}
+
+	r.logger.Info("Successfully deallocated ingress IPs via delegated IPAM")
+	return nil
+}
+
 func (r *infraIPAllocator) AllocateIPs(ctx context.Context) error {
+	// If Gateway/Envoy is disabled but we're using delegated IPAM, check for stale
+	// ingress IPs from a previous run when gateway was enabled. These IPs exist in the
+	// external IPAM pool but won't be used since gateway is disabled.
+	// Deallocate them immediately to return them to the pool.
+	if !r.daemonConfig.EnableEnvoyConfig && r.daemonConfig.IPAM == ipamOption.IPAMDelegatedPlugin {
+		r.logger.Info("Gateway is disabled with delegated IPAM, cleaning up stale ingress IPs")
+		if err := r.deallocateIngressIPsWithDelegatedIPAM(newDefaultCNIExec()); err != nil {
+			r.logger.Warn("Failed to deallocate stale ingress IPs on startup", logfields.Error, err)
+		}
+	}
+
 	// fetch local node. be aware that updating the local node via localNodeStore.Update doesn't update this instance!
 	localNode, err := r.localNodeStore.Get(ctx)
 	if err != nil {

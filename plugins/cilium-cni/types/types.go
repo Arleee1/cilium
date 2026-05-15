@@ -42,7 +42,9 @@ type IPAM struct {
 
 // NetConfList is a CNI chaining configuration
 type NetConfList struct {
-	Plugins []*NetConf `json:"plugins,omitempty"`
+	Name       string     `json:"name"`
+	CNIVersion string     `json:"cniVersion"`
+	Plugins    []*NetConf `json:"plugins,omitempty"`
 }
 
 func parsePrevResult(n *NetConf) (*NetConf, error) {
@@ -76,6 +78,13 @@ func ReadNetConf(path string) (*NetConf, error) {
 	if err := json.Unmarshal(b, netConfList); err == nil {
 		for _, plugin := range netConfList.Plugins {
 			if plugin.Type == "cilium-cni" {
+				// Preserve network name and CNI version from conflist for delegated IPAM
+				if plugin.Name == "" && netConfList.Name != "" {
+					plugin.Name = netConfList.Name
+				}
+				if plugin.CNIVersion == "" && netConfList.CNIVersion != "" {
+					plugin.CNIVersion = netConfList.CNIVersion
+				}
 				return parsePrevResult(plugin)
 			}
 		}

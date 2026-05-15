@@ -31,7 +31,8 @@ const (
 var _ CECTranslator = (*cecTranslator)(nil)
 
 type ServiceConfig struct {
-	ExternalTrafficPolicy string `json:"external_traffic_policy,omitempty"`
+	ExternalTrafficPolicy       string `json:"external_traffic_policy,omitempty"`
+	DisableAzureLBFloatingIP    bool   `json:"disable_azure_lb_floating_ip,omitempty"`
 }
 
 type HostNetworkConfig struct {
