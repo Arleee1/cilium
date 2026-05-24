@@ -7,8 +7,8 @@
 # Should be phased out in 1.27+ when CGO_ENABLED dynamically sets openssl cgo usage
 ARG GOEXPERIMENT=""
 
-ARG GOLANG_IMAGE=docker.io/library/golang:1.25.10@sha256:c0a2bd0756d92462a0d449124b039100ce447ebf69dc6c80a6d877503b36935e
-ARG UBUNTU_IMAGE=docker.io/library/ubuntu:24.04@sha256:84e77dee7d1bc93fb029a45e3c6cb9d8aa4831ccfcc7103d36e876938d28895b
+ARG GOLANG_IMAGE=docker.io/library/golang:1.25.10@sha256:cd05a378aaf011e8056745363e5c40f4f2bef0fa4d9bf19b9c38316079c332ff
+ARG UBUNTU_IMAGE=docker.io/library/ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 
 ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:19.1.7-1775844888-ebe5854@sha256:745aef32b65911d14a8557014d0ae33c6ac0ed975b008e4721a3adf3ebda009a
 ARG CILIUM_BPFTOOL_IMAGE=quay.io/cilium/cilium-bpftool:7.7.0-1775847730-cb6c639@sha256:64712430365b5849110556b421c68b6312756e8b09b552cf3f2de9a20c6b9e8c

@@ -5,14 +5,14 @@
 
 # distroless images are signed by cosign and can be verified using:
 # $ cosign verify $IMAGE_NAME --certificate-oidc-issuer https://accounts.google.com --certificate-identity keyless@distroless.iam.gserviceaccount.com
-ARG BASE_IMAGE=gcr.io/distroless/static:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39
+ARG BASE_IMAGE=gcr.io/distroless/static:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240
 # These SHA256 digests are important for two reasons:
 # 1. They 'pin' the container image to a specific version. Unlike a tag that can be changed at any future point, a
 #    SHA265 hash cannot be modified. This increases the security of the build by protecting against a class of supply
 #    chain attacks where an attacker has write access to our 3rd party dependency image registries.
 # 2. These digests must be to the *overall* digest, not the digest for a specific image. This is because the images will
 #    be architecture specific, but the overall digest will contain all of the architectures.
-ARG GOLANG_IMAGE=docker.io/library/golang:1.25.10@sha256:c0a2bd0756d92462a0d449124b039100ce447ebf69dc6c80a6d877503b36935e
+ARG GOLANG_IMAGE=docker.io/library/golang:1.25.10@sha256:cd05a378aaf011e8056745363e5c40f4f2bef0fa4d9bf19b9c38316079c332ff
 # We don't use ETCD_IMAGE because that's used in Makefile.defs to select a ETCD image approrpate for the *host platform*
 # to run tests with.
 ARG ETCD_SERVER_IMAGE=gcr.io/etcd-development/etcd:v3.6.10@sha256:f65c61039e7b7fd6e651f7ec2459b880589892cb13cf79c2f71c92aa08fc5144
@@ -46,16 +46,13 @@ RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium \
     --mount=type=cache,target=/go/pkg \
     make GOARCH=${BUILDARCH} licenses-all && mv LICENSE.all /out/${TARGETOS}/${TARGETARCH}
 
-# Until we have a native arm64 agent to build this breaks in QEMU
-FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS gops
-# TARGETARCH is an automatic platform ARG enabled by Docker BuildKit.
-ARG TARGETARCH
+FROM ${GOLANG_IMAGE} AS gops
 
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium \
     --mount=type=cache,target=/root/.cache \
     --mount=type=cache,target=/go/pkg \
-    GOARCH=${TARGETARCH} ./build-gops.sh
+    ./build-gops.sh
 
 FROM --platform=${TARGETARCH} ${ETCD_SERVER_IMAGE} AS etcd
 
