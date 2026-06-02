@@ -26,7 +26,7 @@ include Makefile
 # ---- acn-specific variables ------------------------------------------------
 
 # ACN Golang image (MCR-hosted Microsoft Go fork).
-GOLANG_IMAGE ?= mcr.microsoft.com/oss/go/microsoft/golang:1.26.2-1@sha256:24d0b15c59a25b32e382a52eaf2ac6f2262540753cd9cc541037de24f733d72b
+GOLANG_IMAGE ?= mcr.microsoft.com/oss/go/microsoft/golang:1.26.3-1@sha256:bd013a5e4c7f683d44627652060269bbd4d0949143c906f6deeeda0880e72d2c
 export GOLANG_IMAGE
 
 # ACN base/runtime image.
