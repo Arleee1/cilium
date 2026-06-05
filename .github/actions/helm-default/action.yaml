@@ -17,6 +17,18 @@ inputs:
     description: "Enable the kube cache mutation detection"
     required: false
     default: 'false'
+  image-pull-secret:
+    description: "Whether to include the image pull secret in the generated defaults"
+    required: false
+    default: ''
+  registry_host:
+    description: 'Registry host for Cilium images'
+    required: false
+    default: 'quay.io'
+  registry_organization:
+    description: 'Registry organization for Cilium images'
+    required: false
+    default: 'cilium'
 outputs:
   cilium_install_defaults:
     description: "Generated values to be used with Cilium CLI"
@@ -34,20 +46,28 @@ runs:
       run: |
         echo sha=${{ inputs.image-tag }} >> $GITHUB_OUTPUT
 
+        REGISTRY_HOST="${{ inputs.registry_host }}"
+        REGISTRY_ORGANIZATION="${{ inputs.registry_organization }}"
+
+        if [ "${REGISTRY_HOST}" == "quay.io" ] && [ "${REGISTRY_ORGANIZATION}" == "cilium" ]; then
+          REGISTRY_HOST="${{ env.REGISTRY_DEV }}"
+          REGISTRY_ORGANIZATION="${{ env.ORGANIZATION_DEV }}"
+        fi
+
         CILIUM_INSTALL_DEFAULTS="--chart-directory=${{ inputs.chart-dir }} \
           --helm-set=hubble.relay.retryTimeout=5s \
           --helm-set=debug.metricsSamplingInterval=30s \
-          --helm-set=image.repository=${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/cilium-ci \
+          --helm-set=image.repository=${REGISTRY_HOST}/${REGISTRY_ORGANIZATION}/cilium-ci \
           --helm-set=image.useDigest=false \
           --helm-set=image.tag=${{ inputs.image-tag }} \
-          --helm-set=operator.image.repository=${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/operator \
+          --helm-set=operator.image.repository=${REGISTRY_HOST}/${REGISTRY_ORGANIZATION}/operator \
           --helm-set=operator.image.suffix=-ci \
           --helm-set=operator.image.tag=${{ inputs.image-tag }} \
           --helm-set=operator.image.useDigest=false \
-          --helm-set=clustermesh.apiserver.image.repository=${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/clustermesh-apiserver-ci \
+          --helm-set=clustermesh.apiserver.image.repository=${REGISTRY_HOST}/${REGISTRY_ORGANIZATION}/clustermesh-apiserver-ci \
           --helm-set=clustermesh.apiserver.image.tag=${{ inputs.image-tag }} \
           --helm-set=clustermesh.apiserver.image.useDigest=false \
-          --helm-set=hubble.relay.image.repository=${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/hubble-relay-ci \
+          --helm-set=hubble.relay.image.repository=${REGISTRY_HOST}/${REGISTRY_ORGANIZATION}/hubble-relay-ci \
           --helm-set=hubble.relay.image.tag=${{ inputs.image-tag }} \
           --helm-set=hubble.relay.image.useDigest=false \
           --set-string=extraEnv[0].name=CILIUM_FEATURE_METRICS_WITH_DEFAULTS \
@@ -77,11 +97,6 @@ runs:
           --set-string=hubble.relay.extraEnv[3].name=GOPS_CONFIG_DIR \
           --set-string=hubble.relay.extraEnv[3].value=/tmp/gops"
 
-          ### ACN CHANGE ###
-          # Added below as an additional step from https://github.com/cilium/cilium/pull/40001/files
-          # --set-string=hubble.relay.extraEnv[3].name=GOPS_CONFIG_DIR \
-          # --set-string=hubble.relay.extraEnv[3].value=/tmp/gops
-
         if [ "${{ inputs.mutation-detection }}" == "true" ]; then
           CILIUM_INSTALL_DEFAULTS+="--set-string=extraEnv[3].name=KUBE_CACHE_MUTATION_DETECTOR \
             --set-string=extraEnv[3].value=true \
@@ -96,6 +111,10 @@ runs:
         if [ "${{ inputs.debug }}" == "true" ]; then
           CILIUM_INSTALL_DEFAULTS+=" --helm-set=debug.enabled=true \
             --helm-set=debug.verbose=envoy"
+        fi
+
+        if [ "${{ inputs.image-pull-secret }}" != "" ]; then
+          CILIUM_INSTALL_DEFAULTS+=" --helm-set=imagePullSecrets[0].name=${{ inputs.image-pull-secret }}"
         fi
 
         echo cilium_install_defaults=${CILIUM_INSTALL_DEFAULTS} >> $GITHUB_OUTPUT
