@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Set initial commit status
-        uses: cilium/cilium/.github/actions/set-commit-status@main
+        uses: cilium/cilium/.github/actions/set-commit-status@74fb5f98372c3a0ab060b7256a53ec7dfb6dd9be # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
@@ -95,6 +95,7 @@ jobs:
             (github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.event.inputs.PR-number, github.event.inputs.UID || '1')) ||
             (github.event_name == 'pull_request' && github.event.number)
           }}"
+
   check_changes:
     name: Deduce required tests from code changes
     runs-on: ubuntu-24.04
@@ -103,7 +104,7 @@ jobs:
     steps:
       - name: Checkout code
         if: ${{ github.event_name == 'push' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -130,7 +131,7 @@ jobs:
     name: Test on External Cluster
     steps:
       - name: Checkout code (trusted)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.context-ref || github.event.repository.default_branch }}
           persist-credentials: false
@@ -226,7 +227,7 @@ jobs:
           comment_on_pr: false
 
       - name: Checkout code (trusted)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
           ref: ${{ inputs.context-ref || github.event.repository.default_branch }}
@@ -348,7 +349,7 @@ jobs:
             --docker-password="${{ secrets.DOCKER_READ_PASSWORD }}"
 
       - name: Login to docker registry for image wait
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ vars.DOCKER_READ_HOST}}
           username: ${{ vars.DOCKER_READ_USERNAME}}
@@ -366,7 +367,7 @@ jobs:
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
