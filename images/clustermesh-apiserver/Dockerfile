@@ -52,6 +52,7 @@ FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS gops
 ARG TARGETARCH
 
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
+ARG TARGETARCH
 RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium \
     --mount=type=cache,target=/root/.cache \
     --mount=type=cache,target=/go/pkg \
