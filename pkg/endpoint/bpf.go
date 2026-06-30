@@ -1154,7 +1154,11 @@ func (e *Endpoint) applyPolicyMapChangesLocked(regenContext *regenerationContext
 		// updateEnvoy when policy has changed (due to the possible removed redirects), if
 		// the endpoint has Envoy redirects, or is an Ingress endpoint, which needs to
 		// enforce also the full L3/4 policy.
-		if hasNewPolicy || hasEnvoyRedirect || e.isIngress {
+		//
+		// When EnvoyConfig is enabled, policy filters will be applied on listeners that might
+		// not be referenced in policy rules(eg. L7 load balancing). Always update proxy policy
+		// in such cases to propagate incremental updates.
+		if option.Config.EnableEnvoyConfig || hasNewPolicy || hasEnvoyRedirect || e.isIngress {
 			e.getLogger().Debug("applyPolicyMapChanges: Updating Envoy NetworkPolicy")
 			stats.proxyPolicyCalculation.Start()
 			var rf revert.RevertFunc
