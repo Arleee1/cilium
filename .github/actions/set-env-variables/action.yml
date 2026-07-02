@@ -6,7 +6,10 @@ runs:
     - shell: bash
       run: |
         REGISTRY="quay.io"
-        REGISTRY_DEV="quay.io"
+        # ACN: dev/CI images are published to the fork's ACR (acnpublic.azurecr.io),
+        # not quay.io. Keeping REGISTRY_DEV pointed at quay.io breaks "wait for
+        # images"/image pulls in fork CI since fork SHA images only exist in ACR.
+        REGISTRY_DEV="acnpublic.azurecr.io"
         BACKUP_REGISTRY="docker.io"
         echo "REGISTRY=$REGISTRY" >> $GITHUB_ENV
         echo "REGISTRY_DEV=$REGISTRY_DEV" >> $GITHUB_ENV

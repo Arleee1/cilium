@@ -8,6 +8,12 @@ runs:
       run: |
         echo "QUAY_ORGANIZATION=cilium" >> $GITHUB_ENV
         echo "QUAY_ORGANIZATION_DEV=cilium" >> $GITHUB_ENV
+        # ACN: dev/CI images are published to the fork's ACR (acnpublic.azurecr.io),
+        # not quay.io. Workflows that call only this action still need REGISTRY_DEV/
+        # ORGANIZATION_DEV so the pristine ${REGISTRY_DEV}/${ORGANIZATION_DEV}/ image
+        # refs resolve to acnpublic.azurecr.io/cilium/<img> where fork SHA images live.
+        echo "REGISTRY_DEV=acnpublic.azurecr.io" >> $GITHUB_ENV
+        echo "ORGANIZATION_DEV=cilium" >> $GITHUB_ENV
         # no prod yet
         echo "QUAY_CHARTS_ORGANIZATION_DEV=cilium-charts-dev" >> $GITHUB_ENV
         echo "EGRESS_GATEWAY_HELM_VALUES=--helm-set=egressGateway.enabled=true" >> $GITHUB_ENV
