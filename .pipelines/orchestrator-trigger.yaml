@@ -10,7 +10,7 @@ resources:
     - repository: ACN-Agent
       type: git
       name: One/Networking-ACN-Agent
-      ref: refs/heads/jpayne/CI-CD-Orchestrator # Change to main once merged
+      ref: refs/heads/camrynl/orchestrator-updates # TEST: retry-no-skip + open issue on final failure
 
 ## Notes
 # First iteration is to have the AI agent reference within the dev/* branch
@@ -24,6 +24,11 @@ stages:
     jobs:
       - job: env
         displayName: Setup
+        # pipeline_runner self-watches the downstream E2E build inside this job
+        # (Phase 3 wait loop, up to ~4.5h). Without this, the job inherits the
+        # 60-min default timeout and is canceled mid-watch before the build
+        # reaches a terminal state, so the judge/retry never runs.
+        timeoutInMinutes: 360
         pool:
           name: "$(BUILD_POOL_NAME_DEFAULT)"
         steps:
@@ -181,6 +186,12 @@ stages:
               AZURE_OPENAI_DEPLOYMENT: $(AZURE_OPENAI_DEPLOYMENT)
               GITHUB_TOKEN: $(INSTALL_TOKEN)
               GITHUB_REPO: $(Build.Repository.Name)
+              # GitHub App credentials so bootstrap.py can re-mint the installation
+              # token when it expires mid-run (installation tokens last only 1h, but
+              # a single orchestrator invocation can run several hours).
+              GITHUB_APP_ID: $(GITHUB_APP_ID)
+              GITHUB_APP_PRIVATE_KEY: $(GITHUB_APP_PRIVATE_KEY)
+              GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
               ADO_ORG: $(System.CollectionUri)
               ADO_PROJECT: $(System.TeamProject)
               PYTHONUNBUFFERED: "1"
