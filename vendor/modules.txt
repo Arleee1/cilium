@@ -2393,7 +2393,7 @@ k8s.io/kube-openapi/pkg/validation/validate
 ## explicit; go 1.25.0
 k8s.io/kubectl/pkg/util
 k8s.io/kubectl/pkg/util/podutils
-# k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
+# k8s.io/utils v0.0.0-20260626114624-be93311217bd
 ## explicit; go 1.23
 k8s.io/utils/buffer
 k8s.io/utils/clock
