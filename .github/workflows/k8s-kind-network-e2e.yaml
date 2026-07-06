@@ -33,6 +33,8 @@ on:
       - v1.19
       - ft/v1.19/**
 
+# By specifying the access of one of the scopes, all of those that are not
+# specified are set to 'none'.
 permissions:
   ### ACN CHANGE ###
   # Need statuses to report back to PR
@@ -106,7 +108,7 @@ jobs:
     name: Test on External Cluster
     steps:
       - name: Checkout code (trusted)
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.context-ref || github.event.repository.default_branch }}
           persist-credentials: false
@@ -200,7 +202,7 @@ jobs:
           comment_on_pr: false
 
       - name: Checkout code (trusted)
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           ref: ${{ inputs.context-ref || github.event.repository.default_branch }}
@@ -340,7 +342,7 @@ jobs:
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
