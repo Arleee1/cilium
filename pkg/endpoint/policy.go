@@ -246,7 +246,7 @@ func (e *Endpoint) regeneratePolicy(stats *regenerationStatistics, datapathRegen
 		return err
 	}
 	// Ingress endpoint needs no redirects
-	if !e.isProperty(PropertySkipBPFPolicy) {
+	if !e.isPropertyLocked(PropertySkipBPFPolicy) {
 		stats.proxyConfiguration.Start()
 		desiredRedirects, rf = e.addNewRedirects(selectorPolicy, datapathRegenCtxt.proxyWaitGroup)
 		stats.proxyConfiguration.End(true)
@@ -575,7 +575,7 @@ func (e *Endpoint) updateRealizedState(stats *regenerationStatistics, origDir st
 
 	// Start periodic background full reconciliation of the policy map.
 	// Does nothing if it has already been started.
-	if !e.isProperty(PropertyFakeEndpoint) {
+	if !e.isPropertyLocked(PropertyFakeEndpoint) {
 		e.startSyncPolicyMapController()
 	}
 
