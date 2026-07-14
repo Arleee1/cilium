@@ -90,7 +90,25 @@ jobs:
           subscription-id: ${{ secrets.AZURE_BUILD_SUBSCRIPTION_ID }}
 
       - name: ACR Login
-        run: az acr login -n acnpublic.azurecr.io
+        shell: bash
+        run: |
+          set -uo pipefail
+          max_attempts=3
+          for attempt in $(seq 1 "$max_attempts"); do
+            if az acr login -n acnpublic.azurecr.io \
+              && az acr check-health -n acnpublic.azurecr.io --yes; then
+              echo "ACR login validated on attempt ${attempt}"
+              exit 0
+            fi
+            echo "::warning::ACR login/health check failed (attempt ${attempt}/${max_attempts})"
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              sleep_s=$((attempt * 10))
+              echo "Retrying in ${sleep_s}s..."
+              sleep "$sleep_s"
+            fi
+          done
+          echo "::error::ACR login failed after ${max_attempts} attempts"
+          exit 1
 
       - name: Build and Push Runtime Image
         working-directory: images
@@ -138,7 +156,25 @@ jobs:
           subscription-id: ${{ secrets.AZURE_BUILD_SUBSCRIPTION_ID }}
 
       - name: ACR Login
-        run: az acr login -n acnpublic.azurecr.io
+        shell: bash
+        run: |
+          set -uo pipefail
+          max_attempts=3
+          for attempt in $(seq 1 "$max_attempts"); do
+            if az acr login -n acnpublic.azurecr.io \
+              && az acr check-health -n acnpublic.azurecr.io --yes; then
+              echo "ACR login validated on attempt ${attempt}"
+              exit 0
+            fi
+            echo "::warning::ACR login/health check failed (attempt ${attempt}/${max_attempts})"
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              sleep_s=$((attempt * 10))
+              echo "Retrying in ${sleep_s}s..."
+              sleep "$sleep_s"
+            fi
+          done
+          echo "::error::ACR login failed after ${max_attempts} attempts"
+          exit 1
 
       - name: Build and Push Distroless Runtime Image
         working-directory: images

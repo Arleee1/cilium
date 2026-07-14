@@ -28,10 +28,6 @@ on:
         description: "Run ID of the workflow that uploaded the kubeconfig artifact"
         required: false
         default: ''
-  pull_request:
-    paths-ignore:
-      - 'Documentation/**'
-      - 'test/**'
   push:
     branches:
       - v1.19

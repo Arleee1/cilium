@@ -57,22 +57,24 @@ jobs:
               - '.github/workflows/lint-bpf-checks.yaml'
 
   ### ACN Change ###
-  # We dont require that our PRs be signed before merge. We only want Datapath and BPF Intergration Checks to be done
-  # checkpatch:
-  #   name: Check Patch
-  #   runs-on: ubuntu-24.04
-  #   if: ${{ github.event_name == 'pull_request' }}
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-  #       with:
-  #         persist-credentials: false
-  #         fetch-depth: 0
-  #     - name: Run checkpatch.pl
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #       run: |
-  #         make -C bpf checkpatch || (echo "Run 'make -C bpf checkpatch' locally to investigate reports"; exit 1)
+  # Re-enabled: checkpatch now skips upstream rebase PRs (patch-bump/*) whose
+  # commit subjects routinely violate our CUSTOM 75-char subject-length rule.
+  # Our own PRs still get the check.
+  checkpatch:
+    name: Check Patch
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'pull_request' && !startsWith(github.event.pull_request.head.ref, 'patch-bump/') }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run checkpatch.pl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          make -C bpf checkpatch || (echo "Run 'make -C bpf checkpatch' locally to investigate reports"; exit 1)
 
   # Runs only if code under bpf/ or contrib/coccinnelle/ is changed.
   coccicheck:

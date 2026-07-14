@@ -53,6 +53,13 @@ jobs:
           if [[ "${{ github.event_name == 'push' || github.event_name == 'workflow_run' }}" == "true" ]]; then
             commits=${{ github.sha }}
             head_commit=${{ github.sha }}
+          elif [[ "${{ github.event.pull_request.head.ref }}" == patch-bump/* ]]; then
+            ### ACN Change ###
+            # Upstream rebase PRs (patch-bump/*) can carry ~80 commits.
+            # We always squash-merge PRs or merge full upstream tags, so
+            # per-commit signal is discarded on merge — build only the tip.
+            commits=${{ github.event.pull_request.head.sha }}
+            head_commit=${{ github.event.pull_request.head.sha }}
           else
             commits=$(git rev-list ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | tr '\n' ' ')
             head_commit=${{ github.event.pull_request.head.sha }}
