@@ -92,8 +92,15 @@ jobs:
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout code for local action
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/set-commit-status
+
       - name: Set initial commit status
-        uses: cilium/cilium/.github/actions/set-commit-status@main # main
+        uses: ./.github/actions/set-commit-status
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
@@ -172,9 +179,6 @@ jobs:
         uses: ./.github/actions/helm-default
         with:
           image-tag: ${{ inputs.SHA || github.event.pull_request.head.sha || github.sha }}
-          registry_host: ${{ vars.DOCKER_READ_HOST }}
-          registry_organization: ${{ vars.DOCKER_READ_ORG }}
-          image-pull-secret: "cilium-registry"
           chart-dir: ./untrusted/install/kubernetes/cilium
 
       - name: Set image tag
@@ -208,27 +212,12 @@ jobs:
           config: ${{ env.KIND_CONFIG }}
           wait: 0 # The control-plane never becomes ready, since no CNI is present
 
-      - name: Create imagePullSecret
-        run: |
-          kubectl create secret docker-registry cilium-registry \
-            --namespace kube-system \
-            --docker-server=${{ vars.DOCKER_READ_HOST }} \
-            --docker-username="${{ vars.DOCKER_READ_USERNAME }}" \
-            --docker-password="${{ secrets.DOCKER_READ_PASSWORD }}"
-
-      - name: Login to docker registry for image wait
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ${{ vars.DOCKER_READ_HOST}}
-          username: ${{ vars.DOCKER_READ_USERNAME}}
-          password: ${{ secrets.DOCKER_READ_PASSWORD }}
-
       - name: Wait for images to be available
         timeout-minutes: 30
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect ${{ vars.DOCKER_READ_HOST }}/${{ vars.DOCKER_READ_ORG }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
+            until docker manifest inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Set up install variables
