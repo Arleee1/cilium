@@ -1,4 +1,4 @@
-name: Smoke Test with IPv6
+name: Installation and Conformance Test (ipv6)
 
 # Any change in triggers needs to be reflected in the concurrency group.
 on:
@@ -20,10 +20,6 @@ on:
       base-SHA:
         description: "SHA of the base branch (target branch of the PR)."
         required: false
-      run-id:
-        description: "Run ID of the workflow that uploaded the kubeconfig artifact"
-        required: false
-        default: ''
       extra-args:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
@@ -33,26 +29,22 @@ on:
       - v1.19
       - ft/v1.19/**
 
+# By specifying the access of one of the scopes, all of those that are not
+# specified are set to 'none'.
 permissions:
-  ### ACN CHANGE ###
-  # Need statuses to report back to PR
-  # Need actions:read to download artifacts from other workflow runs
+  # To read actions state with cilium/workflow-telemetry-action
+  actions: read
+  # To be able to access the repository with actions/checkout
+  contents: read
+  # To allow retrieving information from the PR API
+  pull-requests: read
+  # To be able to set commit status
+  statuses: write
   # To be able to request the JWT from GitHub's OIDC provider
   id-token: write
-  actions: read
-  contents: read
-  pull-requests: read
-  statuses: write
 
 concurrency:
-  group: |
-    ${{ github.workflow }}
-    ${{ github.event_name }}
-    ${{
-      (github.event_name == 'push' && github.sha) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
-      (github.event_name == 'pull_request' && github.event.number)
-    }}
+  group: ${{ github.workflow }}-${{ inputs.PR-number || github.event.after }}
   cancel-in-progress: true
 
 env:
@@ -63,96 +55,14 @@ env:
   LOG_TIME: 30m
 
 jobs:
-  echo-inputs:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Echo Workflow Dispatch Inputs
-        run: |
-          echo '${{ tojson(inputs) }}'
-      - name: Echo Concurrency Group
-        run: |
-          echo "Current concurrency group:"
-          echo "${{ github.workflow }}"
-          echo "${{ github.event_name }}"
-          echo "${{
-            (github.event_name == 'push' && github.sha) ||
-            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
-            (github.event_name == 'pull_request' && github.event.number)
-          }}"
-          echo "Full concurrency group: ${{ github.workflow }}-${{ github.event_name }}-${{
-            (github.event_name == 'push' && github.sha) ||
-            (github.event_name == 'workflow_dispatch' && github.event.inputs.PR-number) ||
-            (github.event_name == 'pull_request' && github.event.number)
-          }}"
-
   commit-status-start:
     name: Commit Status Start
-    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout code for local action
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            .github/actions/set-commit-status
-
       - name: Set initial commit status
-        uses: ./.github/actions/set-commit-status
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
-
-  ### Separate job for external (AKS) clusters ###
-  # This job runs the actual smoke tests against a pre-existing AKS cluster,
-  # just runs the conformance validation.
-  conformance-test-external:
-    env:
-      job_name: "Test on External Cluster"
-      KUBECONFIG: ${{ github.workspace }}/kubeconfig
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run-id != '' }}
-    runs-on: ubuntu-latest
-    name: Test on External Cluster
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.SHA || github.sha }}
-          persist-credentials: false
-
-      - name: Download kubeconfig artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: kubeconfig
-          run-id: ${{ inputs.run-id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run conformance test (e.g. connectivity check without external 1.1.1.1 and www.google.com)
-        run: |
-          kubectl apply -f ${{ env.CONFORMANCE_TEMPLATE }}
-          kubectl wait --for=condition=Available --all deployment --timeout=${{ env.TIMEOUT }}
-
-      - name: Report status to PR
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            const contextName = 'Smoke Test with IPv6 / AKS External Cluster';
-            const description = state === 'success'
-              ? 'Smoke Test with IPv6 passed on AKS'
-              : 'Smoke Test with IPv6 failed on AKS';
-
-            await github.rest.repos.createCommitStatus({
-              ...context.repo,
-              sha: '${{ inputs.SHA }}',
-              state: state,
-              context: contextName,
-              description: description,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
-  ### END CHANGE ###
 
   conformance-test-ipv6:
     env:
@@ -178,7 +88,10 @@ jobs:
         id: default_vars
         uses: ./.github/actions/helm-default
         with:
-          image-tag: ${{ inputs.SHA || github.event.pull_request.head.sha || github.sha }}
+          image-tag: ${{ inputs.SHA || github.sha }}
+          registry_host: ${{ vars.DOCKER_READ_HOST }}
+          registry_organization: ${{ vars.DOCKER_READ_ORG }}
+          image-pull-secret: "cilium-registry"
           chart-dir: ./untrusted/install/kubernetes/cilium
 
       - name: Set image tag
@@ -212,12 +125,27 @@ jobs:
           config: ${{ env.KIND_CONFIG }}
           wait: 0 # The control-plane never becomes ready, since no CNI is present
 
+      - name: Create imagePullSecret
+        run: |
+          kubectl create secret docker-registry cilium-registry \
+            --namespace kube-system \
+            --docker-server=${{ vars.DOCKER_READ_HOST }} \
+            --docker-username="${{ vars.DOCKER_READ_USERNAME }}" \
+            --docker-password="${{ secrets.DOCKER_READ_PASSWORD }}"
+
+      - name: Login to docker registry for image wait
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ${{ vars.DOCKER_READ_HOST}}
+          username: ${{ vars.DOCKER_READ_USERNAME}}
+          password: ${{ secrets.DOCKER_READ_PASSWORD }}
+
       - name: Wait for images to be available
         timeout-minutes: 30
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
+            until docker manifest inspect ${{ vars.DOCKER_READ_HOST }}/${{ vars.DOCKER_READ_ORG }}/$image:${{ steps.sha.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       - name: Set up install variables
@@ -284,33 +212,17 @@ jobs:
           job_status: "${{ job.status }}"
           capture_features_tested: ${{ steps.run-tests.outcome != 'skipped' }}
 
-      - name: Report status to PR
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            const contextName = 'Smoke Test with IPv6';
-            const description = state === 'success' ? 'Smoke Test with IPv6 passed' : 'Smoke Test with IPv6 failed';
-
-            await github.rest.repos.createCommitStatus({
-              ...context.repo,
-              sha: '${{ inputs.SHA }}',
-              state: state,
-              context: contextName,
-              description: description,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
-
   merge-upload-and-status:
     name: Merge Upload and Status
-    if: ${{ always() && github.event_name != 'pull_request' }}
-    needs:
-      - conformance-test-ipv6
-      - conformance-test-external
+    if: ${{ always() }}
+    needs: conformance-test-ipv6
     uses: ./.github/workflows/common-post-jobs.yaml
     secrets: inherit
     with:
       context-ref: ${{ inputs.context-ref || github.sha }}
       sha: ${{ inputs.SHA || github.sha }}
-      success: ${{ needs.conformance-test-ipv6.result != 'failure' && (needs.conformance-test-external.result == 'success' || needs.conformance-test-external.result == 'skipped') }}
+      success: ${{ needs.conformance-test-ipv6.result != 'failure' }}
+      # This job runs a kubectl-based connectivity check rather than cilium
+      # connectivity test, so it produces no JUnit report. Skip the junit merge
+      # to avoid a spurious "No matching cilium-junits-* artifacts found" warning.
+      merge-junits: false
