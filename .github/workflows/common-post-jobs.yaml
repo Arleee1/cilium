@@ -37,22 +37,16 @@ jobs:
       contents: read
       actions: read
     steps:
-      - name: Checkout context ref (trusted)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ inputs.context-ref }}
-          persist-credentials: false
-
       - name: Merge JUnits
         if: ${{ inputs.merge-junits }}
-        uses: ./.github/actions/merge-artifacts
+        uses: cilium/cilium/.github/actions/merge-artifacts@main # main
         with:
           name: cilium-junits
           pattern: cilium-junits-*
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Merge Features tested
-        uses: ./.github/actions/merge-artifacts
+        uses: cilium/cilium/.github/actions/merge-artifacts@main # main
         with:
           name: features-tested
           pattern: features-tested-*
@@ -64,18 +58,10 @@ jobs:
     name: Commit Status Final
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
       statuses: write
     steps:
-      - name: Checkout code for local action
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            .github/actions/set-commit-status
-
       - name: Set final commit status
-        uses: ./.github/actions/set-commit-status
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.sha }}
           status: ${{ inputs.success && 'success' || 'failure' }}
