@@ -1,22 +1,28 @@
 trigger:
   branches:
     include:
-      - patch-bump/*      # Ai orchestrator branch trigger
+      - patch-bump/*
+  tags:
+    include:
+      - core/v*
 
 pr: none
+
+parameters:
+  - name: orchestratorBranch
+    displayName: Networking-ACN-Agent branch
+    type: string
+    default: refs/heads/main
 
 resources:
   repositories:
     - repository: ACN-Agent
       type: git
       name: One/Networking-ACN-Agent
-      ref: refs/heads/camrynl/orchestrator-updates # TEST: retry-no-skip + open issue on final failure
+      ref: ${{ parameters.orchestratorBranch }}
 
 ## Notes
-# First iteration is to have the AI agent reference within the dev/* branch
-# Plan to move to CI/CD branch, main, once we have a working POC
-#   - This would leverage an API call to trigger the respective orchestrator pipeline.
-#   - Orchestrator is responsible for coordinateing the test agent to trigger the E2E correctly
+# The shared orchestrator runtime selects Phase 1 or Phase 2 from the source ref.
 
 stages:
   - stage: setup
