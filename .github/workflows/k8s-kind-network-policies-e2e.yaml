@@ -24,10 +24,6 @@ on:
         description: "[JSON object] Arbitrary arguments passed from the trigger comment via regex capture group. Parse with 'fromJson(inputs.extra-args).argName' in workflow."
         required: false
         default: '{}'
-      run-id:
-        description: "Run ID of the workflow that uploaded the kubeconfig artifact"
-        required: false
-        default: ''
   push:
     branches:
       - v1.19
@@ -54,143 +50,21 @@ permissions:
   id-token: write
 
 concurrency:
-  group: |
-    ${{ github.workflow }}
-    ${{ github.event_name }}
-    ${{
-      (github.event_name == 'push' && github.sha) ||
-      (github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.event.inputs.PR-number, github.event.inputs.UID || '1')) ||
-      (github.event_name == 'pull_request' && github.event.number)
-    }}
+  group: ${{ github.workflow }}-${{ inputs.PR-number || github.event.after }}
   cancel-in-progress: true
 
 env:
   cluster_name: cilium-testing
 
 jobs:
-  echo-inputs:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Echo Workflow Dispatch Inputs
-        run: |
-          echo '${{ tojson(inputs) }}'
-      - name: Echo Concurrency Group
-        run: |
-          echo "Current concurrency group:"
-          echo "${{ github.workflow }}"
-          echo "${{ github.event_name }}"
-          echo "${{
-            (github.event_name == 'push' && github.sha) ||
-            (github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.event.inputs.PR-number, github.event.inputs.UID || '1')) ||
-            (github.event_name == 'pull_request' && github.event.number)
-          }}"
-          echo "Full concurrency group: ${{ github.workflow }}-${{ github.event_name }}-${{
-            (github.event_name == 'push' && github.sha) ||
-            (github.event_name == 'workflow_dispatch' && format('{0}-{1}', github.event.inputs.PR-number, github.event.inputs.UID || '1')) ||
-            (github.event_name == 'pull_request' && github.event.number)
-          }}"
-
   commit-status-start:
     name: Commit Status Start
-    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout code for local action
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            .github/actions/set-commit-status
-
       - name: Set initial commit status
-        uses: ./.github/actions/set-commit-status
+        uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
-
-  ### Separate job for external (AKS) clusters ###
-  kubernetes-e2e-net-external:
-    env:
-      job_name: "Test on External Cluster"
-      KUBECONFIG: ${{ github.workspace }}/kubeconfig
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run-id != '' }}
-    runs-on: ubuntu-latest
-    name: Test on External Cluster
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ inputs.SHA || github.sha }}
-          persist-credentials: false
-
-      - name: Set Environment Variables
-        uses: ./.github/actions/set-env-variables
-
-      - name: Download kubeconfig artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: kubeconfig
-          run-id: ${{ inputs.run-id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up environment (download Kubernetes dependencies)
-        run: |
-          TMP_DIR=$(mktemp -d)
-          # Test binaries
-          curl -L https://dl.k8s.io/${{ env.KIND_K8S_VERSION }}/kubernetes-test-linux-amd64.tar.gz -o ${TMP_DIR}/kubernetes-test-linux-amd64.tar.gz
-          tar -xvzf ${TMP_DIR}/kubernetes-test-linux-amd64.tar.gz \
-            --directory ${TMP_DIR} \
-            --strip-components=3 kubernetes/test/bin/ginkgo kubernetes/test/bin/e2e.test
-          # kubectl
-          curl -L https://dl.k8s.io/${{ env.KIND_K8S_VERSION }}/bin/linux/amd64/kubectl -o ${TMP_DIR}/kubectl
-          # Install
-          sudo cp ${TMP_DIR}/ginkgo /usr/local/bin/ginkgo
-          sudo cp ${TMP_DIR}/e2e.test /usr/local/bin/e2e.test
-          sudo cp ${TMP_DIR}/kubectl /usr/local/bin/kubectl
-          sudo chmod +x /usr/local/bin/ginkgo /usr/local/bin/e2e.test /usr/local/bin/kubectl
-          sudo rm -rf ${TMP_DIR}
-
-      - name: Run Kubernetes sig-network network policy tests
-        run: |
-          mkdir -p _artifacts
-          cp ${{ env.KUBECONFIG }} _artifacts/kubeconfig.conf
-
-          SKIP_FLAG="should.allow.egress.access.to.server.in.CIDR.block|should.ensure.an.IP.overlapping.both.IPBlock.CIDR.and.IPBlock.Except.is.allowed|should.enforce.except.clause.while.egress.access.to.server.in.CIDR.block|SCTPConnectivity"
-
-          export KUBERNETES_CONFORMANCE_TEST='y'
-          export E2E_REPORT_DIR=${PWD}/_artifacts
-          /usr/local/bin/ginkgo --nodes=10                \
-            --focus="(Netpol|NetworkPolicy)"     \
-            --skip="${SKIP_FLAG}" \
-            /usr/local/bin/e2e.test                       \
-            --                                            \
-            --kubeconfig=${PWD}/_artifacts/kubeconfig.conf     \
-            --provider=skeleton                           \
-            --dump-logs-on-failure=true                   \
-            --report-dir=${E2E_REPORT_DIR}                \
-            --disable-log-dump=true
-
-      - name: Report status to PR
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            const contextName = 'K8s Network Policy E2E tests / AKS External Cluster';
-            const description = state === 'success'
-              ? 'K8s Network Policy E2E tests passed on AKS'
-              : 'K8s Network Policy E2E tests failed on AKS';
-
-            await github.rest.repos.createCommitStatus({
-              ...context.repo,
-              sha: '${{ inputs.SHA }}',
-              state: state,
-              context: contextName,
-              description: description,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
-  ### END CHANGE ###
 
   kubernetes-e2e-net:
     name: K8s Network Policy E2E tests
@@ -212,10 +86,10 @@ jobs:
           comment_on_pr: false
 
       - name: Checkout code (trusted)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.context-ref || github.event.repository.default_branch || github.ref }}
+          ref: ${{ inputs.context-ref || github.event.repository.default_branch }}
 
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
@@ -295,7 +169,10 @@ jobs:
         id: default_vars
         uses: ./.github/actions/helm-default
         with:
-          image-tag: ${{ inputs.SHA || github.event.pull_request.head.sha || github.sha }}
+          image-tag: ${{ inputs.SHA || github.sha }}
+          registry_host: ${{ vars.DOCKER_READ_HOST }}
+          registry_organization: ${{ vars.DOCKER_READ_ORG }}
+          image-pull-secret: "cilium-registry"
           chart-dir: ./untrusted/install/kubernetes/cilium
 
       - name: Set up job variables
@@ -320,19 +197,33 @@ jobs:
           repository: ${{ env.CILIUM_CLI_RELEASE_REPO }}
           release-version: ${{ env.CILIUM_CLI_VERSION }}
 
+      - name: Create imagePullSecret
+        run: |
+          kubectl create secret docker-registry cilium-registry \
+            --namespace kube-system \
+            --docker-server=${{ vars.DOCKER_READ_HOST }} \
+            --docker-username="${{ vars.DOCKER_READ_USERNAME }}" \
+            --docker-password="${{ secrets.DOCKER_READ_PASSWORD }}"
+
+      - name: Login to docker registry for image wait
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ${{ vars.DOCKER_READ_HOST}}
+          username: ${{ vars.DOCKER_READ_USERNAME}}
+          password: ${{ secrets.DOCKER_READ_PASSWORD }}
+
       - name: Wait for images to be available
         timeout-minutes: 30
         shell: bash
         run: |
           for image in cilium-ci operator-generic-ci hubble-relay-ci ; do
-            until docker manifest inspect ${{ env.REGISTRY_DEV }}/${{ env.ORGANIZATION_DEV }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
+            until docker manifest inspect ${{ vars.DOCKER_READ_HOST }}/${{ vars.DOCKER_READ_ORG }}/$image:${{ steps.vars.outputs.sha }} &> /dev/null; do sleep 45s; done
           done
 
       # Warning: since this is a privileged workflow, subsequent workflow job
       # steps must take care not to execute untrusted code.
       - name: Checkout pull request branch (NOT TRUSTED)
-        if: ${{ github.event_name != 'push' && github.event_name != 'schedule' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.vars.outputs.sha }}
           persist-credentials: false
@@ -436,33 +327,13 @@ jobs:
           job_status: "${{ job.status }}"
           capture_features_tested: ${{ steps.run-tests.outcome != 'skipped' }}
 
-      - name: Report status to PR
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.PR-number }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            const contextName = 'K8s Network Policy E2E tests';
-            const description = state === 'success' ? 'K8s Network Policy E2E tests passed' : 'K8s Network Policy E2E tests failed';
-
-            await github.rest.repos.createCommitStatus({
-              ...context.repo,
-              sha: '${{ inputs.SHA }}',
-              state: state,
-              context: contextName,
-              description: description,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
-
   merge-upload-and-status:
     name: Merge Upload and Status
-    if: ${{ always() && github.event_name != 'pull_request' }}
-    needs:
-      - kubernetes-e2e-net
-      - kubernetes-e2e-net-external
+    if: ${{ always() }}
+    needs: kubernetes-e2e-net
     uses: ./.github/workflows/common-post-jobs.yaml
     secrets: inherit
     with:
       context-ref: ${{ inputs.context-ref || github.sha }}
       sha: ${{ inputs.SHA || github.sha }}
-      success: ${{ needs.kubernetes-e2e-net.result == 'success' && (needs.kubernetes-e2e-net-external.result == 'success' || needs.kubernetes-e2e-net-external.result == 'skipped') }}
+      success: ${{ needs.kubernetes-e2e-net.result == 'success' }}
