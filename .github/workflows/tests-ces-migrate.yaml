@@ -72,15 +72,8 @@ jobs:
     name: Commit Status Start
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout code for local action
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            .github/actions/set-commit-status
-
       - name: Set initial commit status
-        uses: ./.github/actions/set-commit-status
+        uses: cilium/actions/set-commit-status@fe0702f5df0d8e44d48f1baa226c023b73ff6b5e # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
@@ -90,7 +83,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout context ref (trusted)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.context-ref || github.sha }}
           persist-credentials: false
@@ -111,15 +104,8 @@ jobs:
     env:
       job_name: "Installation and Migration Test"
     steps:
-      - name: Checkout code for local action
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            .github/actions/set-commit-status
-
       - name: Set commit status to pending
-        uses: ./.github/actions/set-commit-status
+        uses: cilium/actions/set-commit-status@fe0702f5df0d8e44d48f1baa226c023b73ff6b5e # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
 
@@ -129,7 +115,7 @@ jobs:
           comment_on_pr: false
 
       - name: Checkout target branch to access local actions
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.base_ref || github.ref }}
           persist-credentials: false
