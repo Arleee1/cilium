@@ -67,6 +67,18 @@ func (c *Controller) initializeQueue() {
 		})
 }
 
+// shutdownQueues shuts down both workqueues and wakes any worker waiting for
+// an item on the controller's condition variable. Holding the condition lock
+// prevents a worker from starting to wait between shutdown and the broadcast.
+func (c *Controller) shutdownQueues() {
+	c.cond.L.Lock()
+	defer c.cond.L.Unlock()
+
+	c.fastQueue.ShutDown()
+	c.standardQueue.ShutDown()
+	c.cond.Broadcast()
+}
+
 func (c *Controller) onEndpointUpdate(cep *cilium_api_v2.CiliumEndpoint) {
 	if cep.Status.Networking == nil || cep.Status.Identity == nil || cep.GetName() == "" || cep.Namespace == "" {
 		return
@@ -188,8 +200,7 @@ func (c *Controller) Start(ctx cell.HookContext) error {
 
 func (c *Controller) Stop(ctx cell.HookContext) error {
 	c.wp.Close()
-	c.fastQueue.ShutDown()
-	c.standardQueue.ShutDown()
+	c.shutdownQueues()
 	c.contextCancel()
 	return nil
 }
@@ -279,7 +290,13 @@ func (c *Controller) getQueue() workqueue.TypedRateLimitingInterface[CESKey] {
 	c.cond.L.Lock()
 	defer c.cond.L.Unlock()
 
-	if c.fastQueue.Len() == 0 && c.standardQueue.Len() == 0 {
+	for c.fastQueue.Len() == 0 && c.standardQueue.Len() == 0 {
+		if c.fastQueue.ShuttingDown() {
+			return c.fastQueue
+		}
+		if c.standardQueue.ShuttingDown() {
+			return c.standardQueue
+		}
 		c.cond.Wait()
 	}
 
