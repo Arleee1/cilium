@@ -5,7 +5,7 @@ ARG CILIUM_BUILDER_IMAGE=acnpublic.azurecr.io/cilium/cilium-builder-distroless:f
 ARG CILIUM_RUNTIME_IMAGE=acnpublic.azurecr.io/cilium/cilium-runtime-distroless:fa5ef9bae30b897842f38cfa3978df794287d1a6
 ARG NSENTER_BUILDER_IMAGE=mcr.microsoft.com/azurelinux/base/core:3.0
 ARG MARINER_DISTROLESS=mcr.microsoft.com/azurelinux/distroless/base:3.0
-ARG BUSYBOX_IMAGE=mcr.microsoft.com/azurelinux/busybox:1.36.1-azl3.0.20260107@sha256:330ce7e940f7476089c4c74565c63767988e188b06988e58e76b54890e7f621b
+ARG BUSYBOX_IMAGE=mcr.microsoft.com/azurelinux/busybox:1.36.1-azl3.0.20260728@sha256:1b421bbbea6c0a91c739cf46a70fd22e47fb84ac9b5eddf1650c0bbb51ce57b1
 
 FROM ${CILIUM_RUNTIME_IMAGE} AS runtime
 
