@@ -24,13 +24,11 @@ FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} AS builder
     WORKDIR /go/src/github.com/cilium/cilium
     # We must override NOSTRIP=1 to ensure binaries include debug symbols for extraction. They will be stripped subsequently
     # in accordance with the supplied/default NOSTRIP setting. See "Extract debug symbols" below.
-    # Override SUBDIRS_CILIUM_CONTAINER to build only the necessary components for init-containers
     RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium \
         --mount=type=cache,target=/root/.cache \
         --mount=type=cache,target=/go/pkg \
-        make GOARCH=${TARGETARCH} DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} PKG_BUILD=1 $(echo $MODIFIERS | tr -d '"') NOSTRIP=1 \
-        SUBDIRS_CILIUM_CONTAINER="cilium-dbg tools/mount tools/sysctlfix plugins/cilium-cni" \
-        build-container install-container-binary
+        make -C images -f Makefile.acn GOARCH=${TARGETARCH} DESTDIR=/tmp/install/${TARGETOS}/${TARGETARCH} PKG_BUILD=1 \
+        $(echo $MODIFIERS | tr -d '"') NOSTRIP=1 acn-build-distroless-init
 
     # Extract debug symbols to /tmp/debug and strip the binaries if NOSTRIP is not set.
     # Use the appropriate objcopy for the target architecture.
