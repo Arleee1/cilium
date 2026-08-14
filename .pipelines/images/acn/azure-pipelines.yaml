@@ -1,0 +1,60 @@
+trigger: none
+
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - dev/v1.19
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  DisableDockerDetector: true
+  DisableKubernetesDeploymentDetector: true
+  DisableHelmChartsDetector: true
+  TRIVY_VERSION: v0.69.3
+  LinuxContainerImage: onebranch.azurecr.io/linux/ubuntu-2404:latest
+
+resources:
+  repositories:
+    - repository: Templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+    - repository: Cilium-Private
+      type: github
+      endpoint: Azure Container Networking - EMU
+      name: azure-networking/cilium-private
+      ref: refs/heads/main
+    - repository: Pipeline-Source
+      type: github
+      endpoint: Azure Container Networking - EMU
+      name: azure-networking/cilium-private
+      ref: refs/heads/main
+
+extends:
+  template: v2/OneBranch.NonOfficial.CrossPlat.yml@Templates
+  parameters:
+    featureFlags:
+      automaticContainerPatching: true
+      needExceptionForUbuntuUsage: true
+      policy: Microsoft
+      runHostSDL: true
+    globalSdl:
+      binSkim:
+        enabled: false
+      codeql:
+        compiled:
+          enabled: false
+      credscan:
+        enabled: false
+      tsa:
+        enabled: false
+    stages:
+      - template: /.pipelines/images/acn/stages.yaml@Pipeline-Source
+        parameters:
+          ciliumVersion: "1.19"
+          sourceRef: auto
+          sourceSha: auto
+          mode: auto
+          refreshBase: false
+          invocation: auto
