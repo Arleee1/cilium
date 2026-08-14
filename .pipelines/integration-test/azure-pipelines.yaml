@@ -1,0 +1,65 @@
+trigger: none
+# The required PR signal is the Integration Test job check.
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - dev/v1.19
+  paths:
+    exclude:
+      - Documentation/**
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  NUGET_PLUGIN_HANDSHAKE_TIMEOUT_IN_SECONDS: 40
+  NUGET_PLUGIN_REQUEST_TIMEOUT_IN_SECONDS: 300
+  NUGET_PLUGIN_IDLE_TIMEOUT_IN_SECONDS: 1200
+  LinuxContainerImage: onebranch.azurecr.io/linux/ubuntu-2404:latest
+  # The repository mirrors upstream Cilium manifests and Dockerfiles that
+  # intentionally reference public registries. The build does not publish them.
+  DisableDockerDetector: true
+  DisableKubernetesDeploymentDetector: true
+  DisableHelmChartsDetector: true
+
+resources:
+  repositories:
+    - repository: Templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+    - repository: Cilium-Private
+      type: github
+      endpoint: Azure Container Networking - EMU
+      name: azure-networking/cilium-private
+      ref: refs/heads/main
+    - repository: Pipeline-Source
+      type: github
+      endpoint: Azure Container Networking - EMU
+      name: azure-networking/cilium-private
+      ref: refs/heads/main
+
+extends:
+  template: v2/OneBranch.NonOfficial.CrossPlat.yml@Templates
+  parameters:
+    featureFlags:
+      automaticContainerPatching: true
+      needExceptionForUbuntuUsage: true
+      policy: Microsoft
+      runHostSDL: true
+    globalSdl:
+      binSkim:
+        enabled: false
+      codeql:
+        compiled:
+          enabled: false
+      credscan:
+        # Upstream Cilium test fixtures contain known credential-like strings,
+        # and the repository has no curated .gdnsuppress file.
+        enabled: false
+      tsa:
+        enabled: false
+    stages:
+      - template: /.pipelines/integration-test/stages.yaml@Pipeline-Source
+        parameters:
+          ciliumVersion: "1.19"
+          sourceRef: auto
