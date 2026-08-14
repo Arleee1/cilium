@@ -1,0 +1,66 @@
+trigger: none
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - dev/v1.19
+
+parameters:
+  - name: pipelineRef
+    type: string
+    default: refs/heads/main
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  NUGET_PLUGIN_HANDSHAKE_TIMEOUT_IN_SECONDS: 40
+  NUGET_PLUGIN_REQUEST_TIMEOUT_IN_SECONDS: 300
+  NUGET_PLUGIN_IDLE_TIMEOUT_IN_SECONDS: 1200
+  DisableDockerDetector: true
+  DisableKubernetesDeploymentDetector: true
+  DisableHelmChartsDetector: true
+  LinuxContainerImage: onebranch.azurecr.io/linux/ubuntu-2404:latest
+
+resources:
+  repositories:
+    - repository: Templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+    - repository: Cilium-Private
+      type: github
+      endpoint: Azure Container Networking - EMU
+      name: azure-networking/cilium-private
+      ref: refs/heads/main
+    - repository: Pipeline-Source
+      type: github
+      endpoint: Azure Container Networking - EMU
+      name: azure-networking/cilium-private
+      ref: ${{ parameters.pipelineRef }}
+
+extends:
+  template: v2/OneBranch.NonOfficial.CrossPlat.yml@Templates
+  parameters:
+    featureFlags:
+      automaticContainerPatching: true
+      golang:
+        internalModuleProxy:
+          enabled: true
+      needExceptionForUbuntuUsage: true
+      policy: Microsoft
+      runHostSDL: true
+    globalSdl:
+      binSkim:
+        enabled: false
+      codeql:
+        compiled:
+          enabled: false
+      credscan:
+        # Upstream Cilium test fixtures contain known credential-like strings.
+        enabled: false
+      tsa:
+        enabled: false
+    stages:
+      - template: /.pipelines/pr-lint/stages.yaml@Pipeline-Source
+        parameters:
+          ciliumVersion: "1.19"
+          sourceRef: auto
