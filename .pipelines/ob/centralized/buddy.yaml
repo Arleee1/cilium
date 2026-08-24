@@ -114,7 +114,7 @@ extends:
       credscan:
         enabled: true
       suppression:
-        suppressionFile: cilium-private/.gdn/.gdnsuppress
+        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
         suppressionSet: default
       tsa:
         enabled: false
