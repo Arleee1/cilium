@@ -114,7 +114,7 @@ extends:
       credscan:
         enabled: true
       suppression:
-        suppressionFile: cilium-private/.config/.gdnsuppress
+        suppressionFile: cilium-private/.gdn/.gdnsuppress
         suppressionSet: default
       tsa:
         enabled: false
