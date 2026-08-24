@@ -1,4 +1,15 @@
 trigger: none
+parameters:
+  - name: pipelineRef
+    type: string
+    default: refs/heads/main
+  - name: sourceRef
+    type: string
+    default: auto
+  - name: allowRegistryPush
+    type: boolean
+    default: true
+
 # The required PR signal is the Integration Test job check.
 pr:
   autoCancel: true
@@ -29,14 +40,14 @@ resources:
       ref: refs/heads/main
     - repository: Cilium-Private
       type: github
-      endpoint: Azure Container Networking - EMU
+      endpoint: Azure Container Networking - Proxima azure-networking
       name: azure-networking/cilium-private
       ref: refs/heads/main
     - repository: Pipeline-Source
       type: github
-      endpoint: Azure Container Networking - EMU
+      endpoint: Azure Container Networking - Proxima azure-networking
       name: azure-networking/cilium-private
-      ref: refs/heads/main
+      ref: ${{ parameters.pipelineRef }}
 
 extends:
   template: v2/OneBranch.NonOfficial.CrossPlat.yml@Templates
@@ -62,4 +73,5 @@ extends:
       - template: /.pipelines/integration-test/stages.yaml@Pipeline-Source
         parameters:
           ciliumVersion: "1.19"
-          sourceRef: auto
+          sourceRef: ${{ parameters.sourceRef }}
+          allowRegistryPush: ${{ parameters.allowRegistryPush }}
