@@ -11,6 +11,9 @@ parameters:
 - name: validationOnly
   type: boolean
   default: false
+- name: setupOnly
+  type: boolean
+  default: false
 - name: pipelineRef
   type: string
   default: refs/heads/main
@@ -52,7 +55,7 @@ parameters:
   default: "Null"
 
 variables:
-  ${{ if eq(parameters.validationOnly, true) }}:
+  ${{ if or(eq(parameters.validationOnly, true), eq(parameters.setupOnly, true)) }}:
     DisableDockerDetector: true
     DisableKubernetesDeploymentDetector: true
     DisableHelmChartsDetector: true
