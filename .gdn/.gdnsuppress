@@ -1,0 +1,192 @@
+{
+  "version": "latest",
+  "suppressionSets": {
+    "default": {
+      "name": "default",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "lastUpdatedDate": "2026-08-24 00:00:00Z"
+    }
+  },
+  "results": {
+    "97be34971709def5ec64e8a2787a8e964725ef1651f945cb1d7325b86a47e007": {
+      "signature": "97be34971709def5ec64e8a2787a8e964725ef1651f945cb1d7325b86a47e007",
+      "alternativeSignatures": [],
+      "target": "bugtool/cmd/testdata/envoy-config-input.json",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0020",
+      "justification": "Static private key in an upstream bugtool test fixture.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "20f3ba7b5a745de5bf88bbfbf81f08c45f96eef17b1055817ed246f247c2be2e": {
+      "signature": "20f3ba7b5a745de5bf88bbfbf81f08c45f96eef17b1055817ed246f247c2be2e",
+      "alternativeSignatures": [],
+      "target": "pkg/crypto/certloader/certloader_test.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0020",
+      "justification": "Static private key used only by certificate-loader tests.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "927e89324d189a64c0461ef5031deab6e16dacf7261951e0968df1a8a63980db": {
+      "signature": "927e89324d189a64c0461ef5031deab6e16dacf7261951e0968df1a8a63980db",
+      "alternativeSignatures": [],
+      "target": "operator/pkg/gateway-api/helpers/certificates_test.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0020",
+      "justification": "Static private key used only by Gateway API certificate tests.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "e92ddce458d507b8481c08fe10b90c3f378d6a3a6c56d95361252457e61b53a0": {
+      "signature": "e92ddce458d507b8481c08fe10b90c3f378d6a3a6c56d95361252457e61b53a0",
+      "alternativeSignatures": [],
+      "target": "operator/pkg/gateway-api/gateway_reconcile_test.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0020",
+      "justification": "Static private key used only by Gateway API reconciliation tests.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "6e626b914f6db21266128d2026d5616bb986bc2d556e25618eba7eb1f2c6d887": {
+      "signature": "6e626b914f6db21266128d2026d5616bb986bc2d556e25618eba7eb1f2c6d887",
+      "alternativeSignatures": [],
+      "target": "test/consul/consul-client.key",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0020",
+      "justification": "Static key generated for the upstream Consul test fixture.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "ae60566ab0b90ca45f57f15e017fc7331f85d95857ac486f60efc114bf995125": {
+      "signature": "ae60566ab0b90ca45f57f15e017fc7331f85d95857ac486f60efc114bf995125",
+      "alternativeSignatures": [],
+      "target": "test/consul/server.key",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0020",
+      "justification": "Static key generated for the upstream Consul test fixture.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "638aeeb4bd0be635112c3c9d64ba76bedaa2edfb39cf5a19365907805f01891a": {
+      "signature": "638aeeb4bd0be635112c3c9d64ba76bedaa2edfb39cf5a19365907805f01891a",
+      "alternativeSignatures": [],
+      "target": "pkg/wireguard/agent/agent_test.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0140",
+      "justification": "Static WireGuard public-key test vector.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "7cb97e5deaddc60fa67d50b1320dc9e6dfdd95e5d490d881f8318cc97d84ba67": {
+      "signature": "7cb97e5deaddc60fa67d50b1320dc9e6dfdd95e5d490d881f8318cc97d84ba67",
+      "alternativeSignatures": [],
+      "target": "pkg/wireguard/agent/agent_test.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0140",
+      "justification": "Static WireGuard public-key test vector.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "c8c0fde7385e35c18a8ec048b17ac0e59b4e7aa2196231487c7030cbb6ec6804": {
+      "signature": "c8c0fde7385e35c18a8ec048b17ac0e59b4e7aa2196231487c7030cbb6ec6804",
+      "alternativeSignatures": [],
+      "target": "pkg/wireguard/agent/agent_test.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0140",
+      "justification": "Static WireGuard public-key test vector.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "d9ebf5cc8d72588debef95486009ac989abc6088744ca462b6a86da226028665": {
+      "signature": "d9ebf5cc8d72588debef95486009ac989abc6088744ca462b6a86da226028665",
+      "alternativeSignatures": [],
+      "target": "pkg/node/types/node_test.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0140",
+      "justification": "Static WireGuard public-key test vector.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "6af6ead754a39b394f74dfa0a48da6b9827fe64c83a5828d57d0518408e8c659": {
+      "signature": "6af6ead754a39b394f74dfa0a48da6b9827fe64c83a5828d57d0518408e8c659",
+      "alternativeSignatures": [],
+      "target": "pkg/bgpv1/test/gobgp.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0060",
+      "justification": "Static password used only by the GoBGP test fixture.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "aa834038c830815a054b24451b7e361a9ce49f7c959fcbf803a4380bbe680cca": {
+      "signature": "aa834038c830815a054b24451b7e361a9ce49f7c959fcbf803a4380bbe680cca",
+      "alternativeSignatures": [],
+      "target": "examples/kubernetes/addons/prometheus/monitoring-example.yaml",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0060",
+      "justification": "Static password in the upstream Prometheus example configuration.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "b712c77f7aa70be095641acd135bcfce7ff2f55601ec2b2aa51b3b86da8b1c65": {
+      "signature": "b712c77f7aa70be095641acd135bcfce7ff2f55601ec2b2aa51b3b86da8b1c65",
+      "alternativeSignatures": [],
+      "target": "examples/kubernetes/addons/prometheus/files/grafana-config/grafana.ini",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0060",
+      "justification": "Static signing key in the upstream Grafana example configuration.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "775141e92fe2259e553aa812e28afcf5071ebf559e75db0c9f265009ce42724e": {
+      "signature": "775141e92fe2259e553aa812e28afcf5071ebf559e75db0c9f265009ce42724e",
+      "alternativeSignatures": [],
+      "target": "vendor/github.com/docker/docker/api/swagger.yaml",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-GENERAL0060",
+      "justification": "Example password in vendored Docker API documentation.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    },
+    "41cb4412e4f2327d1e062bd62c7882bb39c8ac6f49cea909e9e5f1c8c9f8ea00": {
+      "signature": "41cb4412e4f2327d1e062bd62c7882bb39c8ac6f49cea909e9e5f1c8c9f8ea00",
+      "alternativeSignatures": [],
+      "target": "vendor/github.com/aws/aws-sdk-go-v2/service/sts/api_op_GetAccessKeyInfo.go",
+      "memberOf": ["default"],
+      "tool": "credscan",
+      "ruleId": "CSCAN-AWS0010",
+      "justification": "Published example access key in generated vendored AWS SDK documentation.",
+      "createdDate": "2026-08-24 00:00:00Z",
+      "expirationDate": null,
+      "type": null
+    }
+  }
+}
