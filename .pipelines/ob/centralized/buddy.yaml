@@ -1,0 +1,141 @@
+# Branch-local Buddy entrypoint; shared implementation is loaded from Pipeline-Source.
+trigger: none
+
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - dev/v1.19
+
+parameters:
+- name: validationOnly
+  type: boolean
+  default: false
+- name: pipelineRef
+  type: string
+  default: refs/heads/main
+- name: tagOverwrite
+  type: string
+  default: 'Null'
+- name: region
+  type: string
+  default: westus
+- name: k8sVersion
+  type: string
+  default: "1.35"
+- name: UpgradeCiliumTestVersion
+  type: string
+  default: "Null"
+- name: UpgradeImageTag
+  type: string
+  default: 'Null'
+- name: UpgradeImageContainerRegistry
+  type: string
+  default: "Null"
+- name: PrevImageTag
+  type: string
+  default: 'Null'
+- name: PrevImageContainerRegistry
+  type: string
+  default: "Null"
+- name: PrevSDPImageTag
+  type: string
+  default: 'Null'
+- name: PrevSDPImageContainerRegistry
+  type: string
+  default: "Null"
+- name: UpgradeSDPImageTag
+  type: string
+  default: 'Null'
+- name: UpgradeSDPImageContainerRegistry
+  type: string
+  default: "Null"
+
+variables:
+  ${{ if eq(parameters.validationOnly, true) }}:
+    DisableDockerDetector: true
+    DisableKubernetesDeploymentDetector: true
+    DisableHelmChartsDetector: true
+  NUGET_PLUGIN_HANDSHAKE_TIMEOUT_IN_SECONDS: 40
+  NUGET_PLUGIN_REQUEST_TIMEOUT_IN_SECONDS: 300
+  NUGET_PLUGIN_IDLE_TIMEOUT_IN_SECONDS: 1200
+  mingwurl: https://github.com/niXman/mingw-builds-binaries/releases/download/12.1.0-rt_v10-rev3/x86_64-12.1.0-release-posix-seh-rt_v10-rev3.7z
+  ESRP_XSIGN_MAX_PARALLELIZATION: 100
+  DEBIAN_FRONTEND: noninteractive
+  LinuxContainerImage: mcr.microsoft.com/onebranch/azurelinux/build:3.0
+
+resources:
+  repositories:
+  - repository: Templates
+    type: git
+    name: OneBranch.Pipelines/GovernedTemplates
+    ref: refs/heads/main
+  - repository: Pipeline-Source
+    type: github
+    endpoint: Azure Container Networking - Proxima azure-networking
+    name: azure-networking/cilium-private
+    ref: ${{ parameters.pipelineRef }}
+  - repository: Cilium-Private
+    type: github
+    endpoint: Azure Container Networking - Proxima azure-networking
+    name: azure-networking/cilium-private
+    ref: ${{ parameters.pipelineRef }}
+  - repository: Cilium-Private-Build
+    type: github
+    endpoint: Azure Container Networking - Proxima azure-networking
+    name: azure-networking/cilium-private
+    ref: refs/heads/dev/v1.19
+  - repository: Cilium-Private-Build-Cilium-Cli
+    type: github
+    endpoint: Azure Container Networking - Proxima azure-networking
+    name: azure-networking/cilium-private
+    ref: refs/heads/main
+
+extends:
+  template: v2/OneBranch.NonOfficial.CrossPlat.yml@Templates
+  parameters:
+    featureFlags:
+      automaticContainerPatching: true
+      golang:
+        internalModuleProxy:
+          enabled: true
+      needExceptionForUbuntuUsage: true
+      policy: Microsoft
+      runHostSDL: true
+    globalSdl:
+      binSkim:
+        enabled: false
+      codeql:
+        compiled:
+          enabled: true
+      credscan:
+        enabled: true
+      suppression:
+        suppressionFile: cilium-private/.config/.gdnsuppress
+        suppressionSet: default
+      tsa:
+        enabled: false
+    stages:
+    - ${{ if eq(parameters.validationOnly, true) }}:
+      - template: /.pipelines/ob/centralized/validation-stages.yaml@Pipeline-Source
+        parameters:
+          buildBranch: dev/v1.19
+          ciliumTestVersion: "1.19"
+    - ${{ else }}:
+      - template: /.pipelines/ob/ob-pipeline.yaml@Pipeline-Source
+        parameters:
+          buildBranch: dev/v1.19
+          ciliumCliBuilderBranch: refs/heads/main
+          tagOverwrite: ${{ parameters.tagOverwrite }}
+          ciliumTestVersion: "1.19"
+          k8sVersion: ${{ parameters.k8sVersion }}
+          region: ${{ parameters.region }}
+          UpgradeCiliumTestVersion: ${{ parameters.UpgradeCiliumTestVersion }}
+          UpgradeImageTag: ${{ parameters.UpgradeImageTag }}
+          UpgradeImageContainerRegistry: ${{ parameters.UpgradeImageContainerRegistry }}
+          PrevImageTag: ${{ parameters.PrevImageTag }}
+          PrevImageContainerRegistry: ${{ parameters.PrevImageContainerRegistry }}
+          PrevSDPImageTag: ${{ parameters.PrevSDPImageTag }}
+          PrevSDPImageContainerRegistry: ${{ parameters.PrevSDPImageContainerRegistry }}
+          UpgradeSDPImageTag: ${{ parameters.UpgradeSDPImageTag }}
+          UpgradeSDPImageContainerRegistry: ${{ parameters.UpgradeSDPImageContainerRegistry }}
