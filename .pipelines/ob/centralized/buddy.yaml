@@ -55,10 +55,9 @@ parameters:
   default: "Null"
 
 variables:
-  ${{ if or(eq(parameters.validationOnly, true), eq(parameters.setupOnly, true)) }}:
-    DisableDockerDetector: true
-    DisableKubernetesDeploymentDetector: true
-    DisableHelmChartsDetector: true
+  DisableDockerDetector: true
+  DisableKubernetesDeploymentDetector: true
+  DisableHelmChartsDetector: true
   NUGET_PLUGIN_HANDSHAKE_TIMEOUT_IN_SECONDS: 40
   NUGET_PLUGIN_REQUEST_TIMEOUT_IN_SECONDS: 300
   NUGET_PLUGIN_IDLE_TIMEOUT_IN_SECONDS: 1200
