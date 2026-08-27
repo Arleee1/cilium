@@ -6,6 +6,14 @@ trigger:
     include:
       - core/v*
 
+schedules:
+  - cron: "*/30 * * * *"
+    displayName: Resume patch-bump orchestration
+    branches:
+      include:
+        - patch-bump/*
+    always: true
+
 pr: none
 
 parameters:
@@ -119,6 +127,7 @@ stages:
               echo "BUILD_SOURCEVERSION:      $(Build.SourceVersion)"
               echo "BUILD_SOURCEBRANCH:       $(Build.SourceBranch)"
               echo "BUILD_REQUESTEDFOR:       $(Build.RequestedFor)"
+              echo "BUILD_REASON:             $(Build.Reason)"
               echo "BUILD_DEFINITIONID:       $BUILD_DEFINITIONID"
               echo "STATE_STORAGE_ACCOUNT:    $(STATE_STORAGE_ACCOUNT)"
               echo "STATE_STORAGE_CONTAINER:  $(STATE_STORAGE_CONTAINER)"
@@ -136,6 +145,7 @@ stages:
               BUILD_SOURCEVERSION: $(Build.SourceVersion)
               BUILD_SOURCEBRANCH: $(Build.SourceBranch)
               BUILD_REQUESTEDFOR: $(Build.RequestedFor)
+              BUILD_REASON: $(Build.Reason)
               BUILD_DEFINITIONID: $(System.DefinitionId)
               STATE_STORAGE_CONTAINER: $(STATE_STORAGE_CONTAINER)
               AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
@@ -174,6 +184,7 @@ stages:
                 export BUILD_SOURCEVERSION="$(Build.SourceVersion)"
                 export BUILD_SOURCEBRANCH="$(Build.SourceBranch)"
                 export BUILD_REQUESTEDFOR="$(Build.RequestedFor)"
+                export BUILD_REASON="$(Build.Reason)"
                 ORCH_DIR="$(Build.SourcesDirectory)/ACN-Agent/cilium-private-release-orchestrator/orchestrator"
                 echo "ORCH_DIR: $ORCH_DIR"
                 echo "Agent outbound IP: $(curl -sf https://api.ipify.org)" # Added due to potential NSP blocks.
@@ -185,6 +196,7 @@ stages:
               BUILD_SOURCEVERSION: $(Build.SourceVersion)
               BUILD_SOURCEBRANCH: $(Build.SourceBranch)
               BUILD_REQUESTEDFOR: $(Build.RequestedFor)
+              BUILD_REASON: $(Build.Reason)
               BUILD_DEFINITIONID: $(System.DefinitionId)
               STATE_STORAGE_ACCOUNT: $(STATE_STORAGE_ACCOUNT)
               STATE_STORAGE_CONTAINER: $(STATE_STORAGE_CONTAINER)
@@ -200,4 +212,7 @@ stages:
               GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
               ADO_ORG: $(System.CollectionUri)
               ADO_PROJECT: $(System.TeamProject)
+              CILIUM_BUILD_PIPELINE_ID: "371023"
+              CILIUM_RELEASE_PIPELINE_ID: "427658"
+              ORCHESTRATOR_BRANCH: ${{ parameters.orchestratorBranch }}
               PYTHONUNBUFFERED: "1"

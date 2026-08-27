@@ -27,7 +27,7 @@ pr:
   autoCancel: true
   branches:
     include:
-      - dev/v1.19
+      - '*'
 
 variables:
   DEBIAN_FRONTEND: noninteractive

@@ -3,7 +3,7 @@ pr:
   autoCancel: true
   branches:
     include:
-      - dev/v1.19
+      - '*'
 
 parameters:
   - name: pipelineRef
