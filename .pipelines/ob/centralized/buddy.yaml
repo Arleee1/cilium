@@ -86,7 +86,7 @@ resources:
     type: github
     endpoint: Azure Container Networking - Proxima azure-networking
     name: azure-networking/cilium-private
-    ref: refs/heads/dev/v1.19
+    ref: ${{ variables['Build.SourceBranch'] }}
   - repository: Cilium-Private-Build-Cilium-Cli
     type: github
     endpoint: Azure Container Networking - Proxima azure-networking

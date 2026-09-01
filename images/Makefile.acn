@@ -42,11 +42,13 @@ export DOCKER_BUILD_ARGS
 # Registries used by acn-* targets.  Defaults to the upstream REGISTRIES.
 ACN_REGISTRIES ?= $(REGISTRIES)
 
+# Include the complete ACN recipe so any change to this file invalidates the
+# base images that the recipe builds and downstream jobs consume.
+ACN_MAKEFILE_INPUT_HASH := $(shell sha256sum Makefile.acn | cut -c1-12)
+
 # Compute the runtime image tag (git tree hash of images/runtime) combined with
-# a fingerprint of build-arg inputs.  This ensures changes to DOCKER_BUILD_ARGS
-# (e.g. GOLANG_IMAGE, BASE_IMAGE, GOEXPERIMENT) produce a distinct tag instead
-# of reusing a stale image already present in the registry.
-ACN_RUNTIME_IMAGE_INPUT_HASH := $(shell printf '%s\n' "$(DOCKER_BUILD_ARGS)" | sha256sum | cut -c1-12)
+# a fingerprint of the ACN recipe and build-arg inputs.
+ACN_RUNTIME_IMAGE_INPUT_HASH := $(shell printf '%s\n%s\n' "$(ACN_MAKEFILE_INPUT_HASH)" "$(DOCKER_BUILD_ARGS)" | sha256sum | cut -c1-12)
 ACN_RUNTIME_IMAGE_TAG := $(shell scripts/make-image-tag.sh images/runtime)-$(ACN_RUNTIME_IMAGE_INPUT_HASH)
 ACN_RUNTIME_IMAGE_NAME := cilium-runtime
 # First word of ACN_REGISTRIES is used as the base for image references.
@@ -70,7 +72,7 @@ CILIUM_DISTROLESS_AGENT_SUBDIRS = $(filter-out $(CILIUM_DISTROLESS_INIT_ONLY_SUB
 CILIUM_DISTROLESS_INIT_SUBDIRS := cilium-dbg $(CILIUM_DISTROLESS_INIT_ONLY_SUBDIRS)
 
 # Compute the distroless runtime image tag and reference.
-ACN_DISTROLESS_RUNTIME_IMAGE_INPUT_HASH := $(shell printf '%s\n' "$(DOCKER_BUILD_ARGS)" | sha256sum | cut -c1-12)
+ACN_DISTROLESS_RUNTIME_IMAGE_INPUT_HASH := $(shell printf '%s\n%s\n' "$(ACN_MAKEFILE_INPUT_HASH)" "$(DOCKER_BUILD_ARGS)" | sha256sum | cut -c1-12)
 ACN_DISTROLESS_RUNTIME_IMAGE_TAG := $(shell scripts/make-image-tag.sh images/distroless/runtime)-$(ACN_DISTROLESS_RUNTIME_IMAGE_INPUT_HASH)
 ACN_DISTROLESS_RUNTIME_IMAGE_NAME := cilium-runtime-distroless
 ACN_DISTROLESS_RUNTIME_IMAGE := $(firstword $(ACN_REGISTRIES))/$(ACN_DISTROLESS_RUNTIME_IMAGE_NAME):$(ACN_DISTROLESS_RUNTIME_IMAGE_TAG)
