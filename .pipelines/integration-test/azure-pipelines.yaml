@@ -6,6 +6,12 @@ parameters:
   - name: sourceRef
     type: string
     default: auto
+  - name: sourceSha
+    type: string
+    default: auto
+  - name: targetRef
+    type: string
+    default: auto
   - name: allowRegistryPush
     type: boolean
     default: true
@@ -74,4 +80,6 @@ extends:
         parameters:
           ciliumVersion: "1.19"
           sourceRef: ${{ parameters.sourceRef }}
+          sourceSha: ${{ parameters.sourceSha }}
+          targetRef: ${{ parameters.targetRef }}
           allowRegistryPush: ${{ parameters.allowRegistryPush }}

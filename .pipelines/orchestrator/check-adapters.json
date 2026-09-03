@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "checks": [
+    {
+      "provider": "azure-pipelines",
+      "checkName": "Cilium Private Integration Test",
+      "pipelineId": 472941,
+      "nativeTrigger": "pull_request",
+      "discoveryTimeoutMinutes": 60,
+      "maintenance": {
+        "retryFailedStages": true,
+        "maxRetryCycles": 2
+      },
+      "fallbackTrigger": {
+        "yamlRef": "$PR_BASE_REF",
+        "resources": {
+          "Cilium-Private": "$PR_HEAD"
+        },
+        "templateParameters": {
+          "pipelineRef": "refs/heads/main",
+          "sourceRef": "$PR_HEAD_REF",
+          "sourceSha": "$PR_HEAD_SHA",
+          "targetRef": "$PR_BASE_REF",
+          "allowRegistryPush": false
+        }
+      }
+    },
+    {
+      "provider": "azure-pipelines",
+      "checkName": "Cilium PR Lint Validation",
+      "pipelineId": 472986,
+      "nativeTrigger": "pull_request",
+      "discoveryTimeoutMinutes": 60,
+      "maintenance": {
+        "retryFailedStages": true,
+        "maxRetryCycles": 2
+      },
+      "fallbackTrigger": {
+        "yamlRef": "$PR_BASE_REF",
+        "resources": {
+          "Cilium-Private": "$PR_HEAD"
+        },
+        "templateParameters": {
+          "pipelineRef": "refs/heads/main",
+          "sourceRef": "$PR_HEAD_REF",
+          "sourceSha": "$PR_HEAD_SHA",
+          "targetRef": "$PR_BASE_REF",
+          "runAllChecks": false
+        }
+      }
+    },
+    {
+      "provider": "azure-pipelines",
+      "checkName": "Cilium Private Buddy PR",
+      "pipelineId": 389854,
+      "nativeTrigger": "pull_request",
+      "discoveryTimeoutMinutes": 60,
+      "maintenance": {
+        "retryFailedStages": true,
+        "maxRetryCycles": 2
+      }
+    }
+  ]
+}

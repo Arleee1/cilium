@@ -22,12 +22,27 @@ parameters:
     type: string
     default: refs/heads/main
 
+variables:
+  EXPECTED_PIPELINE_IDS: "389854"
+  MANAGED_PIPELINE_IDS: "389854"
+  TRIGGERABLE_PIPELINE_IDS: " "
+  PBO_VERDICT_EXEMPT_CHECKS: "GitOps/GitHubPop"
+  TRUSTED_CHECK_PROVIDERS: "azure-pipelines,github-actions"
+  GITHUB_APP_AZURE_SERVICE_CONNECTION: azure-networking GH App - EMU
+  GITHUB_APP_KEY_VAULT: GH-AzureNetworking-KV
+  GITHUB_APP_KEY_NAME: gh-app-proxima-prod
+
 resources:
   repositories:
     - repository: ACN-Agent
       type: git
       name: One/Networking-ACN-Agent
       ref: ${{ parameters.orchestratorBranch }}
+    - repository: GitHub-App-Source
+      type: github
+      endpoint: Azure Container Networking - Proxima azure-networking
+      name: azure-networking/cilium-private
+      ref: refs/heads/main
 
 ## Notes
 # The shared orchestrator runtime selects Phase 1 or Phase 2 from the source ref.
@@ -36,8 +51,40 @@ stages:
   - stage: setup
     displayName: Setup
     jobs:
+      - job: auth
+        displayName: Authenticate to Proxima
+        pool:
+          name: Networking-ContainerNetworking-VMSS
+        steps:
+          - template: /.pipelines/github-app/get-token.yaml@GitHub-App-Source
+            parameters:
+              repository: GitHub-App-Source
+              azureServiceConnection: $(GITHUB_APP_AZURE_SERVICE_CONNECTION)
+              keyVaultName: $(GITHUB_APP_KEY_VAULT)
+              keyName: $(GITHUB_APP_KEY_NAME)
+              githubApiUrl: https://api.msft.ghe.com
+              githubOwner: azure-networking
+              githubRepository: cilium-private
+              githubClientId: Iv23oxCQOO8ZnZHUSIKJ
+              githubInstallationId: "7642"
+              githubAppSlug: cilium-private-automation
+              permissions:
+                actions: write
+                checks: read
+                contents: write
+                issues: write
+                metadata: read
+                pull_requests: write
+                statuses: write
+                workflows: write
+              outputVariable: INSTALL_TOKEN
+              outputIsSecretJobOutput: true
+
       - job: env
         displayName: Setup
+        dependsOn: auth
+        variables:
+          INSTALL_TOKEN: $[ dependencies.auth.outputs['GitHubAppToken.INSTALL_TOKEN'] ]
         # pipeline_runner self-watches the downstream E2E build inside this job
         # (Phase 3 wait loop, up to ~4.5h). Without this, the job inherits the
         # 60-min default timeout and is canceled mid-watch before the build
@@ -56,71 +103,6 @@ stages:
               which python3
               python3 --version
             displayName: "Debug: Verify Tools Available"
-
-          - bash: |
-              set -e
-
-              # --- Step 1: Decode the private key ---
-              echo "step 1"
-              printf '%s' "$GITHUB_APP_PRIVATE_KEY" | tr -d ' \n\r' | base64 -d > /tmp/github_app.pem
-              chmod 600 /tmp/github_app.pem
-              echo "PEM first line: $(head -1 /tmp/github_app.pem)"
-              echo "PEM last line:  $(tail -1 /tmp/github_app.pem)"
-              echo "PEM line count: $(wc -l < /tmp/github_app.pem)"
-
-              # --- Step 2: Build JWT using openssl ---
-              echo "step 2"
-              NOW=$(date +%s)
-              echo "step 2 - Header"
-              HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' \
-                | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-              echo "step 2 - Payload"
-              PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' \
-                $((NOW - 60)) $((NOW + 600)) "$GITHUB_APP_ID" \
-                | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-              echo "step 2 - Signature"
-              SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" \
-                | openssl dgst -binary -sha256 -sign /tmp/github_app.pem \
-                | base64 -w 0 | tr '+/' '-_' | tr -d '=')
-              JWT="$HEADER.$PAYLOAD.$SIG"
-
-              # --- Step 3: Exchange JWT for a short-lived installation token ---
-              echo "step 3 - Exchanging JWT for installation token"
-              INSTALL_TOKEN_RESPONSE=$(curl -sf -X POST \
-                -H "Authorization: Bearer $JWT" \
-                -H "Accept: application/vnd.github+json" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                "https://api.github.com/app/installations/$GITHUB_APP_INSTALLATION_ID/access_tokens")
-
-              # Log permissions granted to this token (safe — does not print the token itself)
-              echo "step 3 - Token permissions granted by GitHub:"
-              echo "$INSTALL_TOKEN_RESPONSE" | python3 -c \
-                "import sys,json; d=json.load(sys.stdin); print('  permissions:', json.dumps(d.get('permissions',{}), indent=4)); print('  expires_at:', d.get('expires_at','n/a')); print('  repository_selection:', d.get('repository_selection','n/a'))"
-              INSTALL_TOKEN=$(echo "$INSTALL_TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
-
-              # --- Step 4: Validate the token ---
-              echo "step 4 - Validating installation token"
-              RATE_LIMIT_RESPONSE=$(curl -sf \
-                -H "Authorization: Bearer $INSTALL_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                "https://api.github.com/rate_limit")
-              if [[ $? -eq 0 ]]; then
-                echo "✅ Token is valid"
-                echo "$RATE_LIMIT_RESPONSE"
-              else
-                echo "❌ Token validation failed"
-                exit 1
-              fi
-
-              # --- Step 5: Publish token as a pipeline variable for follow-on steps ---
-              echo "##vso[task.setvariable variable=INSTALL_TOKEN;issecret=true]$INSTALL_TOKEN"
-
-            displayName: 'Generate GitHub Installation Token'
-            env:
-              GITHUB_APP_ID: $(GITHUB_APP_ID)
-              GITHUB_APP_PRIVATE_KEY: $(GITHUB_APP_PRIVATE_KEY)
-              GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
 
           - bash: |
               echo "=== Debug: Login Step Environment Variables ==="
@@ -204,15 +186,15 @@ stages:
               AZURE_OPENAI_DEPLOYMENT: $(AZURE_OPENAI_DEPLOYMENT)
               GITHUB_TOKEN: $(INSTALL_TOKEN)
               GITHUB_REPO: $(Build.Repository.Name)
-              # GitHub App credentials so bootstrap.py can re-mint the installation
-              # token when it expires mid-run (installation tokens last only 1h, but
-              # a single orchestrator invocation can run several hours).
-              GITHUB_APP_ID: $(GITHUB_APP_ID)
-              GITHUB_APP_PRIVATE_KEY: $(GITHUB_APP_PRIVATE_KEY)
-              GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
+              GITHUB_REPOSITORY_URI: $(Build.Repository.Uri)
               ADO_ORG: $(System.CollectionUri)
               ADO_PROJECT: $(System.TeamProject)
               CILIUM_BUILD_PIPELINE_ID: "371023"
               CILIUM_RELEASE_PIPELINE_ID: "427658"
               ORCHESTRATOR_BRANCH: ${{ parameters.orchestratorBranch }}
+              EXPECTED_PIPELINE_IDS: $(EXPECTED_PIPELINE_IDS)
+              MANAGED_PIPELINE_IDS: $(MANAGED_PIPELINE_IDS)
+              TRIGGERABLE_PIPELINE_IDS: $(TRIGGERABLE_PIPELINE_IDS)
+              PBO_VERDICT_EXEMPT_CHECKS: $(PBO_VERDICT_EXEMPT_CHECKS)
+              TRUSTED_CHECK_PROVIDERS: $(TRUSTED_CHECK_PROVIDERS)
               PYTHONUNBUFFERED: "1"
