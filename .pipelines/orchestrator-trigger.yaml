@@ -75,6 +75,7 @@ stages:
               githubAppSlug: cilium-private-automation
               permissions:
                 actions: write
+                administration: read
                 checks: read
                 contents: write
                 issues: write
