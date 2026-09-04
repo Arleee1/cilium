@@ -51,8 +51,13 @@ stages:
   - stage: setup
     displayName: Setup
     jobs:
-      - job: auth
-        displayName: Authenticate to Proxima
+      - job: env
+        displayName: Setup
+        # pipeline_runner self-watches the downstream E2E build inside this job
+        # (Phase 3 wait loop, up to ~4.5h). Without this, the job inherits the
+        # 60-min default timeout and is canceled mid-watch before the build
+        # reaches a terminal state, so the judge/retry never runs.
+        timeoutInMinutes: 360
         pool:
           name: Networking-ContainerNetworking-VMSS
         steps:
@@ -78,21 +83,7 @@ stages:
                 statuses: write
                 workflows: write
               outputVariable: INSTALL_TOKEN
-              outputIsSecretJobOutput: true
 
-      - job: env
-        displayName: Setup
-        dependsOn: auth
-        variables:
-          INSTALL_TOKEN: $[ dependencies.auth.outputs['GitHubAppToken.INSTALL_TOKEN'] ]
-        # pipeline_runner self-watches the downstream E2E build inside this job
-        # (Phase 3 wait loop, up to ~4.5h). Without this, the job inherits the
-        # 60-min default timeout and is canceled mid-watch before the build
-        # reaches a terminal state, so the judge/retry never runs.
-        timeoutInMinutes: 360
-        pool:
-          name: "$(BUILD_POOL_NAME_DEFAULT)"
-        steps:
           - checkout: self
           - checkout: ACN-Agent
             path: s/ACN-Agent
