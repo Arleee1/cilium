@@ -16,12 +16,6 @@ schedules:
 
 pr: none
 
-parameters:
-  - name: orchestratorBranch
-    displayName: Networking-ACN-Agent branch
-    type: string
-    default: refs/heads/main
-
 variables:
   EXPECTED_PIPELINE_IDS: "389854"
   MANAGED_PIPELINE_IDS: "389854"
@@ -37,7 +31,7 @@ resources:
     - repository: ACN-Agent
       type: git
       name: One/Networking-ACN-Agent
-      ref: ${{ parameters.orchestratorBranch }}
+      ref: refs/heads/main
     - repository: GitHub-App-Source
       type: github
       endpoint: Azure Container Networking - Proxima azure-networking
@@ -87,7 +81,27 @@ stages:
 
           - checkout: self
           - checkout: ACN-Agent
+            clean: true
             path: s/ACN-Agent
+          - bash: |
+              set -euo pipefail
+              selected_ref="${ORCHESTRATOR_BRANCH:-refs/heads/main}"
+              git check-ref-format "${selected_ref}"
+              [[ "${selected_ref}" == refs/heads/* ]] || {
+                echo "ORCHESTRATOR_BRANCH must be a full refs/heads/* ref." >&2
+                exit 1
+              }
+              repo="$(Build.SourcesDirectory)/ACN-Agent"
+              auth_header="AUTHORIZATION: bearer ${SYSTEM_ACCESSTOKEN}"
+              git -C "${repo}" -c http.extraheader="${auth_header}" \
+                fetch --force --no-tags origin "${selected_ref}"
+              git -C "${repo}" checkout --detach FETCH_HEAD
+              echo "##vso[task.setvariable variable=ORCHESTRATOR_BRANCH]${selected_ref}"
+              echo "Using ACN-Agent ${selected_ref}@$(git -C "${repo}" rev-parse HEAD)"
+            displayName: Select ACN-Agent runtime branch
+            env:
+              ORCHESTRATOR_BRANCH: $(ORCHESTRATOR_BRANCH)
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
           - script: |
               echo "hello world"
               which openssl
@@ -183,7 +197,7 @@ stages:
               ADO_PROJECT: $(System.TeamProject)
               CILIUM_BUILD_PIPELINE_ID: "371023"
               CILIUM_RELEASE_PIPELINE_ID: "427658"
-              ORCHESTRATOR_BRANCH: ${{ parameters.orchestratorBranch }}
+              ORCHESTRATOR_BRANCH: $(ORCHESTRATOR_BRANCH)
               EXPECTED_PIPELINE_IDS: $(EXPECTED_PIPELINE_IDS)
               MANAGED_PIPELINE_IDS: $(MANAGED_PIPELINE_IDS)
               TRIGGERABLE_PIPELINE_IDS: $(TRIGGERABLE_PIPELINE_IDS)
