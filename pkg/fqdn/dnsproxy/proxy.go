@@ -955,7 +955,7 @@ func (p *DNSProxy) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
 	}
 	stat.ProcessingTime.Start()
 
-	qname, _, _, _, _, _, _, err := ExtractMsgDetails(request)
+	requestDetails, err := ExtractRequestMsgDetails(request)
 	if err != nil {
 		scopedLog.Error("cannot extract DNS message details", logfields.Error, err)
 		stat.Err = fmt.Errorf("cannot extract DNS message details: %w", err)
@@ -965,6 +965,7 @@ func (p *DNSProxy) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
 		return
 	}
 
+	qname := requestDetails.QName
 	scopedLog = scopedLog.With(logfields.DNSName, qname)
 	scopedLog.Debug("Handling DNS query from endpoint")
 
@@ -993,15 +994,6 @@ func (p *DNSProxy) ServeDNS(w dns.ResponseWriter, request *dns.Msg) {
 		logfields.Identity, ep.GetIdentity(),
 	)
 
-	requestDetails, err := ExtractRequestMsgDetails(request)
-	if err != nil {
-		scopedLog.Error("cannot extract DNS message details", logfields.Error, err)
-		stat.Err = fmt.Errorf("cannot extract DNS message details: %w", err)
-		stat.ProcessingTime.End(false)
-		stat.TotalTime.End(false)
-		p.sendErrorResponse(scopedLog, w, request, false)
-		return
-	}
 	proto, targetServer, err := p.lookupTargetDNSServer(w)
 	if err != nil {
 		p.logger.Error("cannot extract destination IP:port from DNS request", logfields.Error, err)
