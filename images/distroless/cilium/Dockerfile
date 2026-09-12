@@ -31,9 +31,6 @@ FROM ${CILIUM_ENVOY_IMAGE} AS cilium-envoy
 # that are not backwards compatible.
 #
 FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} AS builder
-# GOEXPERIMENT inherited from builder
-# For FIPS build in 1.26 with --build-arg GOEXPERIMENT=ms_nocgo_opensslcrypto
-# Should be phased out in 1.27+ when CGO_ENABLED dynamically sets openssl cgo usage
 
 # TARGETOS is an automatic platform ARG enabled by Docker BuildKit.
 ARG TARGETOS

@@ -4,15 +4,13 @@
 ARG CILIUM_BUILDER_IMAGE=acnpublic.azurecr.io/cilium/cilium-builder-distroless:fa5ef9bae30b897842f38cfa3978df794287d1a6
 ARG CILIUM_RUNTIME_IMAGE=acnpublic.azurecr.io/cilium/cilium-runtime-distroless:fa5ef9bae30b897842f38cfa3978df794287d1a6
 ARG NSENTER_BUILDER_IMAGE=mcr.microsoft.com/azurelinux/base/core:3.0
+ARG UTIL_LINUX_VERSION=v2.40.4
 ARG MARINER_DISTROLESS=mcr.microsoft.com/azurelinux/distroless/base:3.0
 ARG BUSYBOX_IMAGE=mcr.microsoft.com/azurelinux/busybox:1.36.1-azl3.0.20260728@sha256:1b421bbbea6c0a91c739cf46a70fd22e47fb84ac9b5eddf1650c0bbb51ce57b1
 
 FROM ${CILIUM_RUNTIME_IMAGE} AS runtime
 
 FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} AS builder
-    # GOEXPERIMENT inherited from builder
-    # For FIPS build in 1.26 with --build-arg GOEXPERIMENT=ms_nocgo_opensslcrypto
-    # Should be phased out in 1.27+ when CGO_ENABLED dynamically sets openssl cgo usage
 
     # TARGETOS is an automatic platform ARG enabled by Docker BuildKit.
     ARG TARGETOS
@@ -59,6 +57,7 @@ FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} AS builder
         /tmp/install/${TARGETOS}/${TARGETARCH}
 
 FROM ${NSENTER_BUILDER_IMAGE} AS nsenter
+ARG UTIL_LINUX_VERSION
 # Builds a statically linked nsenter binary
     RUN tdnf install -y \
         coreutils \
@@ -80,7 +79,8 @@ FROM ${NSENTER_BUILDER_IMAGE} AS nsenter
         kernel-headers \
         glibc-static
 
-    RUN git clone --depth 1 https://github.com/util-linux/util-linux.git /src/util-linux
+    RUN git clone --branch "${UTIL_LINUX_VERSION}" --depth 1 \
+        https://github.com/util-linux/util-linux.git /src/util-linux
     WORKDIR /src/util-linux
 
     RUN ./autogen.sh && \

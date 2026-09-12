@@ -26,7 +26,7 @@ include Makefile
 # ---- acn-specific variables ------------------------------------------------
 
 # ACN Golang image (MCR-hosted Microsoft Go fork).
-GOLANG_IMAGE ?= mcr.microsoft.com/oss/go/microsoft/golang:1.26.7-1@sha256:be14ce4ce048adf5584ce3a0919d21987284e2235b6e7e9bb0e6a01133870be9
+GOLANG_IMAGE ?= mcr.microsoft.com/oss/go/microsoft/golang:1.27.1-2@sha256:251592ab5a6789c4e855b717bacb04ba61c1481a40e94df56477c6df9b27a35d
 export GOLANG_IMAGE
 
 # ACN base/runtime image.
@@ -36,7 +36,7 @@ export BASE_IMAGE
 
 # Space-separated KEY=VALUE pairs forwarded as --build-arg to docker buildx.
 # Example: DOCKER_BUILD_ARGS=HTTP_PROXY=http://proxy:8080 CUSTOM_FLAG=1
-DOCKER_BUILD_ARGS ?= GOEXPERIMENT=ms_nocgo_opensslcrypto GOLANG_IMAGE=$(GOLANG_IMAGE) BASE_IMAGE=$(BASE_IMAGE)
+DOCKER_BUILD_ARGS ?= GOLANG_IMAGE=$(GOLANG_IMAGE) BASE_IMAGE=$(BASE_IMAGE)
 export DOCKER_BUILD_ARGS
 
 # Registries used by acn-* targets.  Defaults to the upstream REGISTRIES.

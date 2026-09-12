@@ -68,8 +68,7 @@ RUN for f in $(find /tmp/debug -type f -name '*.debug' -not -name 'debug-wrapper
 FROM --platform=${BUILDPLATFORM} ${ALPINE_IMAGE} AS certs
 RUN apk --update add ca-certificates
 
-# Until we have a native arm64 agent to build this breaks in QEMU
-FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS gops
+FROM ${GOLANG_IMAGE} AS gops
 # TARGETARCH is an automatic platform ARG enabled by Docker BuildKit.
 ARG TARGETARCH
 

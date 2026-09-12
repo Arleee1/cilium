@@ -2,14 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ARG DISTRO=mariner
-# For FIPS build in 1.26 with --build-arg GOEXPERIMENT=ms_nocgo_opensslcrypto
-# Should be phased out in 1.27+ when CGO_ENABLED dynamically sets openssl cgo usage
-ARG GOEXPERIMENT=""
-
 ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:5569a29cea6b3ad50aeb03102aaf3dc03841197c@sha256:b15dbedb7c49816c74a765e2f6ecdb9359763b8e4e4328d794f48b9cefae9804
 ARG CILIUM_RUNTIME_IMAGE=acnpublic.azurecr.io/cilium/cilium-runtime-distroless:fa5ef9bae30b897842f38cfa3978df794287d1a6
 ARG TESTER_IMAGE=quay.io/cilium/image-tester:dd09c8d3ef349a909fbcdc99279516baef153f22@sha256:c056d064cb47c97acd607343db5457e1d49d9338d6d8a87e93e23cc93f052c73
-ARG GOLANG_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.26.1-1@sha256:df6482f65c8186602a54343b27e17fcb22c6b9ea2d8a6036ccf17b609294176e
+ARG GOLANG_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.27.1-2@sha256:251592ab5a6789c4e855b717bacb04ba61c1481a40e94df56477c6df9b27a35d
 ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:19.1.7-1775844888-ebe5854@sha256:745aef32b65911d14a8557014d0ae33c6ac0ed975b008e4721a3adf3ebda009a
 
 FROM ${COMPILERS_IMAGE} AS compilers-image
@@ -75,8 +71,6 @@ RUN tdnf clean all && \
 
 FROM ${DISTRO}-fs AS intermediate
 ARG DISTRO
-ARG GOEXPERIMENT
-ENV GOEXPERIMENT=${GOEXPERIMENT}
 
 COPY --from=compilers-image /usr/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu
 

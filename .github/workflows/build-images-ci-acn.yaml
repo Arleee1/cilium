@@ -134,8 +134,8 @@ jobs:
           # Organization
           echo "quay-organization-dev=cilium" >> $GITHUB_OUTPUT
 
-          # Default MODIFIERS matching Makefile.docker, with GOEXPERIMENT for MCR Go.
-          echo "modifiers=GOEXPERIMENT=ms_nocgo_opensslcrypto" >> $GITHUB_OUTPUT
+          # Microsoft Go 1.27 selects the no-cgo OpenSSL backend automatically.
+          echo "modifiers=" >> $GITHUB_OUTPUT
 
           echo "Golang image: ${golang_image}"
           echo "Alpine image: ${alpine_image}"

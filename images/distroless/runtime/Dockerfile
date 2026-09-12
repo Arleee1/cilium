@@ -2,12 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ARG DISTRO=mariner
-# For FIPS build in 1.26 with --build-arg GOEXPERIMENT=ms_nocgo_opensslcrypto
-# Should be phased out in 1.27+ when CGO_ENABLED dynamically sets openssl cgo usage
-ARG GOEXPERIMENT=""
-
 ARG TESTER_IMAGE=quay.io/cilium/image-tester:dd09c8d3ef349a909fbcdc99279516baef153f22@sha256:c056d064cb47c97acd607343db5457e1d49d9338d6d8a87e93e23cc93f052c73
-ARG GOLANG_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.26.1-1@sha256:df6482f65c8186602a54343b27e17fcb22c6b9ea2d8a6036ccf17b609294176e
+ARG GOLANG_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.27.1-2@sha256:251592ab5a6789c4e855b717bacb04ba61c1481a40e94df56477c6df9b27a35d
 ARG UBUNTU_IMAGE=docker.io/library/ubuntu:22.04@sha256:0e5e4a57c2499249aafc3b40fcd541e9a456aab7296681a3994d631587203f97
 ARG MARINER_IMAGE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:82e37ddcf271af1b720036697d8ab8c95f7001c3eaf7694a9ca17b35d84085de
 
@@ -20,8 +16,6 @@ FROM ${CILIUM_BPFTOOL_IMAGE} AS bpftool-dist
 FROM ${CILIUM_IPTABLES_IMAGE} AS iptables-dist
 
 FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS gops-cni-builder
-ARG GOEXPERIMENT
-ENV GOEXPERIMENT=${GOEXPERIMENT}
 
 WORKDIR /go/src/github.com/cilium/cilium/images/runtime
 ARG TARGETARCH
