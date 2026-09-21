@@ -62,6 +62,23 @@ runs:
           --location ${{ inputs.location }} \
           $TAGS
 
+        # Dump why provisioning failed before "Clean up AKS" deletes the group.
+        # A timeout bounds every call so the dump cannot outlive the step.
+        dump_azure_state() {
+          timeout 60 az aks show \
+            --resource-group ${{ inputs.cluster_name }} \
+            --name ${{ inputs.cluster_name }} \
+            --query '{provisioningState:provisioningState,powerState:powerState,pools:agentPoolProfiles[].{name:name,state:provisioningState}}' \
+            -o json || true
+          # ARM keeps the reason in the activity log, which core az reads.
+          timeout 90 az monitor activity-log list \
+            --resource-group ${{ inputs.cluster_name }} \
+            --status Failed \
+            --offset 1h \
+            --query '[].{op:operationName.localizedValue,code:properties.statusCode,msg:properties.statusMessage}' \
+            -o json || true
+        }
+
         # Create AKS cluster
         az aks create \
           --resource-group ${{ inputs.cluster_name }} \
@@ -74,7 +91,49 @@ runs:
           --ip-families ipv4,ipv6 \
           ${{ inputs.taints }} \
           --generate-ssh-keys \
-          --api-server-authorized-ip-ranges ${{ steps.get-runner-ip.outputs.cidr }}
+          --api-server-authorized-ip-ranges ${{ steps.get-runner-ip.outputs.cidr }} \
+          --no-wait
+
+        # 17 minutes, 1.5x the slowest create that has returned since 2026-09-08
+        # (679s). The 25 minute step timeout also covers the node waits below,
+        # which can add 690s, so the create cannot have the whole budget.
+        # SECONDS counts from the top of this script, group create included.
+        deadline=1020
+        interval=30
+        while true; do
+          # Bounded, so a hung az still lets the deadline check below run.
+          state="$(timeout 60 az aks show \
+            --resource-group ${{ inputs.cluster_name }} \
+            --name ${{ inputs.cluster_name }} \
+            --query provisioningState -o tsv 2>/dev/null || true)"
+          # The dump below reports why a query failed.
+          [ -n "${state}" ] || state=ShowFailed
+          echo "$(date -u +%H:%M:%S) provisioningState=${state} (${SECONDS}s)"
+
+          case "${state}" in
+            Succeeded)
+              break
+              ;;
+            Failed|Canceled)
+              echo "::error::cluster provisioning ended in ${state} after ${SECONDS}s"
+              dump_azure_state
+              exit 1
+              ;;
+          esac
+
+          if [ "${SECONDS}" -ge "${deadline}" ]; then
+            echo "::error::cluster still ${state} after ${SECONDS}s, aborting"
+            # --no-wait, because cancelling an AKS create starts another long
+            # running operation that would otherwise eat the dump's budget.
+            timeout 60 az aks operation-abort \
+              --resource-group ${{ inputs.cluster_name }} \
+              --name ${{ inputs.cluster_name }} --no-wait || true
+            dump_azure_state
+            exit 1
+          fi
+
+          sleep "${interval}"
+        done
 
     - name: Get cluster credentials
       shell: bash
