@@ -250,6 +250,9 @@ func (c *Client) Initialized() <-chan struct{} {
 
 func (c *Client) onStart(ctx cell.HookContext) error {
 	if c.useCRD {
+		if c.dynamicClient == nil {
+			return fmt.Errorf("SPIRE CRD backend enabled but dynamic client is not initialized")
+		}
 		c.log.InfoContext(ctx, "SPIRE CRD backend enabled; skipping direct SPIRE server connection")
 		close(c.initialized)
 		return nil
@@ -577,6 +580,9 @@ func (c *Client) DeleteBatch(ctx context.Context, ids []string) error {
 }
 
 func (c *Client) List(ctx context.Context) ([]string, error) {
+	if c.useCRD {
+		return c.listNamespaceCRDs(ctx)
+	}
 	c.entryMutex.RLock()
 	defer c.entryMutex.RUnlock()
 

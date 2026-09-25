@@ -5,6 +5,8 @@ package spire
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -36,6 +38,17 @@ var clusterSPIFFEIDGVR = schema.GroupVersionResource{
 	Resource: "clusterspiffeids",
 }
 
+const (
+	// crdManagedByLabel/Value tag every ClusterSPIFFEID this operator creates so
+	// they can be listed and pruned without touching CRs owned by anything else.
+	crdManagedByLabel = "app.kubernetes.io/managed-by"
+	crdManagedByValue = "cilium-operator"
+	// crdFieldManager is the server-side apply field manager for operator-owned fields.
+	crdFieldManager = "cilium-operator-ztunnel"
+	// maxCRDNameLen is the Kubernetes object name length limit.
+	maxCRDNameLen = 63
+)
+
 // namespaceFromID extracts the namespace from a workload id of the form
 // "namespace/serviceaccount".
 func namespaceFromID(id string) string {
@@ -43,8 +56,17 @@ func namespaceFromID(id string) string {
 }
 
 // crdSPIFFEIDName derives a deterministic, DNS-safe ClusterSPIFFEID name for a namespace.
+// A namespace can be up to 63 chars, so the "ztunnel-" prefix can push the name past the
+// 63-char object-name limit; when it would, truncate and append a short content hash to
+// keep the name unique and within bounds.
 func crdSPIFFEIDName(namespace string) string {
-	return "ztunnel-" + strings.ToLower(namespace)
+	name := "ztunnel-" + strings.ToLower(namespace)
+	if len(name) <= maxCRDNameLen {
+		return name
+	}
+	sum := sha256.Sum256([]byte(namespace))
+	suffix := "-" + hex.EncodeToString(sum[:])[:8]
+	return name[:maxCRDNameLen-len(suffix)] + suffix
 }
 
 // buildClusterSPIFFEID builds the unstructured ClusterSPIFFEID for a namespace.
@@ -63,6 +85,9 @@ func (c *Client) buildClusterSPIFFEID(namespace string) *unstructured.Unstructur
 		Kind:    "ClusterSPIFFEID",
 	})
 	obj.SetName(crdSPIFFEIDName(namespace))
+	obj.SetLabels(map[string]string{
+		crdManagedByLabel: crdManagedByValue,
+	})
 	obj.Object["spec"] = map[string]any{
 		"spiffeIDTemplate": template,
 		"namespaceSelector": map[string]any{
@@ -74,25 +99,38 @@ func (c *Client) buildClusterSPIFFEID(namespace string) *unstructured.Unstructur
 	return obj
 }
 
-// upsertNamespaceCRD creates or updates the ClusterSPIFFEID for a namespace.
+// upsertNamespaceCRD creates or updates the ClusterSPIFFEID for a namespace using
+// server-side apply. Apply only owns the fields this operator sets (name, labels, spec),
+// so it never clobbers fields owned by the spire-controller-manager (finalizers, status,
+// className, etc.) the way a full-object Get+Update would.
 func (c *Client) upsertNamespaceCRD(ctx context.Context, namespace string) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not initialized")
 	}
 	desired := c.buildClusterSPIFFEID(namespace)
-	res := c.dynamicClient.Resource(clusterSPIFFEIDGVR)
-
-	existing, err := res.Get(ctx, desired.GetName(), metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			_, err = res.Create(ctx, desired, metav1.CreateOptions{})
-			return err
-		}
-		return err
-	}
-	desired.SetResourceVersion(existing.GetResourceVersion())
-	_, err = res.Update(ctx, desired, metav1.UpdateOptions{})
+	_, err := c.dynamicClient.Resource(clusterSPIFFEIDGVR).Apply(
+		ctx, desired.GetName(), desired,
+		metav1.ApplyOptions{FieldManager: crdFieldManager, Force: true},
+	)
 	return err
+}
+
+// listNamespaceCRDs returns the names of every ClusterSPIFFEID this operator owns.
+func (c *Client) listNamespaceCRDs(ctx context.Context) ([]string, error) {
+	if c.dynamicClient == nil {
+		return nil, fmt.Errorf("dynamic client not initialized")
+	}
+	list, err := c.dynamicClient.Resource(clusterSPIFFEIDGVR).List(ctx, metav1.ListOptions{
+		LabelSelector: crdManagedByLabel + "=" + crdManagedByValue,
+	})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].GetName())
+	}
+	return names, nil
 }
 
 // deleteNamespaceCRD deletes the ClusterSPIFFEID for a namespace (NotFound is ignored).
