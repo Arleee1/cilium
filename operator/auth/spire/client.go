@@ -113,7 +113,7 @@ type ClientConfig struct {
 	SpireServerAddress           string        `mapstructure:"mesh-auth-spire-server-address"`
 	SpireServerConnectionTimeout time.Duration `mapstructure:"mesh-auth-spire-server-connection-timeout"`
 	SpiffeTrustDomain            string        `mapstructure:"mesh-auth-spiffe-trust-domain"`
-	// UseCRD (POC) registers identities as ClusterStaticEntry CRDs instead of
+	// UseCRD (POC) registers identities as ClusterSPIFFEID CRDs instead of
 	// calling the SPIRE server Entry API directly.
 	UseCRD bool `mapstructure:"mesh-auth-spire-use-crd"`
 }
@@ -141,7 +141,7 @@ func (cfg ClientConfig) Flags(flags *pflag.FlagSet) {
 		"The trust domain for the SPIFFE identity.")
 	flags.Bool("mesh-auth-spire-use-crd",
 		cfg.UseCRD,
-		"POC: register identities as ClusterStaticEntry CRDs instead of calling the SPIRE server API directly.")
+		"POC: register identities as ClusterSPIFFEID CRDs instead of calling the SPIRE server API directly.")
 }
 
 type params struct {
@@ -180,7 +180,7 @@ type Client struct {
 	entryMutex  lock.RWMutex
 	k8sClient   k8sClient.Clientset
 	initialized chan struct{}
-	// useCRD (POC) switches registration to write ClusterStaticEntry CRDs via
+	// useCRD (POC) switches registration to write ClusterSPIFFEID CRDs via
 	// dynamicClient instead of the SPIRE Entry API.
 	useCRD        bool
 	dynamicClient dynamic.Interface
