@@ -113,9 +113,10 @@ type ClientConfig struct {
 	SpireServerAddress           string        `mapstructure:"mesh-auth-spire-server-address"`
 	SpireServerConnectionTimeout time.Duration `mapstructure:"mesh-auth-spire-server-connection-timeout"`
 	SpiffeTrustDomain            string        `mapstructure:"mesh-auth-spiffe-trust-domain"`
-	// UseCRD (POC) registers identities as ClusterSPIFFEID CRDs instead of
-	// calling the SPIRE server Entry API directly.
-	UseCRD bool `mapstructure:"mesh-auth-spire-use-crd"`
+	// UseCRD enables CRD-based ztunnel enrollment: the Cilium Operator creates one
+	// ClusterSPIFFEID per enrolled namespace instead of calling the SPIRE server
+	// Entry API directly.
+	UseCRD bool `mapstructure:"enable-ztunnel-spiffeid-crd"`
 }
 
 var defaultClientConfig = ClientConfig{
@@ -139,9 +140,9 @@ func (cfg ClientConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("mesh-auth-spiffe-trust-domain",
 		cfg.SpiffeTrustDomain,
 		"The trust domain for the SPIFFE identity.")
-	flags.Bool("mesh-auth-spire-use-crd",
+	flags.Bool("enable-ztunnel-spiffeid-crd",
 		cfg.UseCRD,
-		"POC: register identities as ClusterSPIFFEID CRDs instead of calling the SPIRE server API directly.")
+		"Enable CRD-based ztunnel enrollment: the Cilium Operator creates one ClusterSPIFFEID per enrolled namespace instead of calling the SPIRE server Entry API directly.")
 }
 
 type params struct {
