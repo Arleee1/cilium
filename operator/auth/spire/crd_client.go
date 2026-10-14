@@ -7,198 +7,247 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
+	"github.com/cilium/hive/cell"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	"github.com/cilium/cilium/pkg/logging/logfields"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/dynamic"
 )
 
-// An alternative registration backend that writes spire-controller-manager
-// ClusterSPIFFEID custom resources to the Kubernetes API server instead of
-// calling the SPIRE server Entry API directly. A per-server spire-controller-manager
-// then reconciles these CRs into each server's datastore, so the API server becomes
-// the shared source of truth (no shared external database required).
-//
-// One ClusterSPIFFEID is created per enrolled namespace. It is scoped to that
-// namespace via namespaceSelector and renders each pod's SPIFFE ID from the pod's
-// namespace and service account. The parent ID is intentionally NOT set: the SPIRE
-// server assigns it dynamically to the node agent that attests each pod, so the
-// registration follows the workload across nodes with no CR change.
-
-// clusterSPIFFEIDGVR is the GroupVersionResource for the spire-controller-manager
-// ClusterSPIFFEID CRD (spire.spiffe.io/v1alpha1).
-var clusterSPIFFEIDGVR = schema.GroupVersionResource{
+var clusterStaticEntryGVR = schema.GroupVersionResource{
 	Group:    "spire.spiffe.io",
 	Version:  "v1alpha1",
-	Resource: "clusterspiffeids",
+	Resource: "clusterstaticentries",
 }
 
 const (
-	// crdManagedByLabel/Value tag every ClusterSPIFFEID this operator creates so
-	// they can be listed and pruned without touching CRs owned by anything else.
 	crdManagedByLabel = "app.kubernetes.io/managed-by"
 	crdManagedByValue = "cilium-operator"
-	// crdFieldManager is the server-side apply field manager for operator-owned fields.
-	crdFieldManager = "cilium-operator-ztunnel"
-	// maxCRDNameLen is the Kubernetes object name length limit.
-	maxCRDNameLen = 63
+	crdPurposeLabel   = "spire.cilium.io/registration"
+	crdPurposeValue   = "ztunnel-serviceaccount"
+	crdNamespaceLabel = "spire.cilium.io/namespace"
+	crdIDAnnotation   = "spire.cilium.io/service-account"
+	maxCRDNameLen     = 63
 )
 
-// namespaceFromID extracts the namespace from a workload id of the form
-// "namespace/serviceaccount".
-func namespaceFromID(id string) string {
-	return strings.SplitN(id, "/", 2)[0]
+// CRDClient persists one ClusterStaticEntry per ServiceAccount. Each SPIRE
+// controller-manager independently reconciles these resources into its server.
+// It does not implement identity.Provider: CR names are not SPIRE entry IDs.
+type CRDClient struct {
+	client      dynamic.ResourceInterface
+	trustDomain string
+	entryCfg    SpireEntryConfig
+	initialized chan struct{}
 }
 
-// crdSPIFFEIDName derives a deterministic, DNS-safe ClusterSPIFFEID name for a namespace.
-// A namespace can be up to 63 chars, so the "ztunnel-" prefix can push the name past the
-// 63-char object-name limit; when it would, truncate and append a short content hash to
-// keep the name unique and within bounds.
-func crdSPIFFEIDName(namespace string) string {
-	name := "ztunnel-" + strings.ToLower(namespace)
-	if len(name) <= maxCRDNameLen {
-		return name
-	}
-	sum := sha256.Sum256([]byte(namespace))
-	suffix := "-" + hex.EncodeToString(sum[:])[:8]
-	return name[:maxCRDNameLen-len(suffix)] + suffix
+var _ SpireClient = (*CRDClient)(nil)
+var _ ServiceAccountPruner = (*CRDClient)(nil)
+
+func (c *CRDClient) onStart(cell.HookContext) error {
+	close(c.initialized)
+	return nil
 }
 
-// buildClusterSPIFFEID builds the unstructured ClusterSPIFFEID for a namespace.
-// It matches all pods in the namespace and renders spiffe://<trustDomain>/ns/<ns>/sa/<sa>
-// for each. No parentID is set; SPIRE assigns the attesting node agent dynamically.
-func (c *Client) buildClusterSPIFFEID(namespace string) *unstructured.Unstructured {
-	template := fmt.Sprintf(
-		"spiffe://%s/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}",
-		c.cfg.SpiffeTrustDomain,
-	)
-
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "spire.spiffe.io",
-		Version: "v1alpha1",
-		Kind:    "ClusterSPIFFEID",
-	})
-	obj.SetName(crdSPIFFEIDName(namespace))
-	obj.SetLabels(map[string]string{
-		crdManagedByLabel: crdManagedByValue,
-	})
-	obj.Object["spec"] = map[string]any{
-		"spiffeIDTemplate": template,
-		"namespaceSelector": map[string]any{
-			"matchLabels": map[string]any{
-				"kubernetes.io/metadata.name": namespace,
-			},
-		},
-	}
-	return obj
+func (c *CRDClient) Initialized() <-chan struct{} {
+	return c.initialized
 }
 
-// upsertNamespaceCRD creates or updates the ClusterSPIFFEID for a namespace using
-// server-side apply. Apply only owns the fields this operator sets (name, labels, spec),
-// so it never clobbers fields owned by the spire-controller-manager (finalizers, status,
-// className, etc.) the way a full-object Get+Update would.
-func (c *Client) upsertNamespaceCRD(ctx context.Context, namespace string) error {
-	if c.dynamicClient == nil {
-		return fmt.Errorf("dynamic client not initialized")
+func serviceAccountNamespace(id string) (string, error) {
+	namespace, account, ok := strings.Cut(id, "/")
+	if !ok || len(validation.IsDNS1123Label(namespace)) != 0 ||
+		len(validation.IsDNS1123Subdomain(account)) != 0 {
+		return "", fmt.Errorf("invalid ServiceAccount ID %q: expected namespace/serviceaccount", id)
 	}
-	desired := c.buildClusterSPIFFEID(namespace)
-	_, err := c.dynamicClient.Resource(clusterSPIFFEIDGVR).Apply(
-		ctx, desired.GetName(), desired,
-		metav1.ApplyOptions{FieldManager: crdFieldManager, Force: true},
-	)
-	return err
+	return namespace, nil
 }
 
-// listNamespaceCRDs returns the names of every ClusterSPIFFEID this operator owns.
-func (c *Client) listNamespaceCRDs(ctx context.Context) ([]string, error) {
-	if c.dynamicClient == nil {
-		return nil, fmt.Errorf("dynamic client not initialized")
+func crdEntryName(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	suffix := "-" + hex.EncodeToString(sum[:16])
+	name := "ztunnel-" + strings.NewReplacer("/", "-", ".", "-").Replace(id)
+	if len(name) > maxCRDNameLen-len(suffix) {
+		name = name[:maxCRDNameLen-len(suffix)]
 	}
-	list, err := c.dynamicClient.Resource(clusterSPIFFEIDGVR).List(ctx, metav1.ListOptions{
-		LabelSelector: crdManagedByLabel + "=" + crdManagedByValue,
-	})
+	return strings.TrimRight(name, "-") + suffix
+}
+
+func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructured, error) {
+	namespace, err := serviceAccountNamespace(id)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(list.Items))
-	for i := range list.Items {
-		names = append(names, list.Items[i].GetName())
+	entry := c.entryCfg.entry(c.trustDomain, id)
+	selectors := make([]any, 0, len(entry.Selectors))
+	for _, selector := range entry.Selectors {
+		selectors = append(selectors, selector.Type+":"+selector.Value)
 	}
-	return names, nil
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   clusterStaticEntryGVR.Group,
+		Version: clusterStaticEntryGVR.Version,
+		Kind:    "ClusterStaticEntry",
+	})
+	obj.SetName(crdEntryName(id))
+	obj.SetLabels(map[string]string{
+		crdManagedByLabel: crdManagedByValue,
+		crdPurposeLabel:   crdPurposeValue,
+		crdNamespaceLabel: namespace,
+	})
+	// A namespaced ServiceAccount cannot own a cluster-scoped resource.
+	obj.SetAnnotations(map[string]string{crdIDAnnotation: id})
+	obj.Object["spec"] = map[string]any{
+		"spiffeID":  "spiffe://" + entry.SpiffeId.TrustDomain + entry.SpiffeId.Path,
+		"parentID":  "spiffe://" + entry.ParentId.TrustDomain + entry.ParentId.Path,
+		"selectors": selectors,
+	}
+	return obj, nil
 }
 
-// deleteNamespaceCRD deletes the ClusterSPIFFEID for a namespace (NotFound is ignored).
-func (c *Client) deleteNamespaceCRD(ctx context.Context, namespace string) error {
-	if c.dynamicClient == nil {
-		return fmt.Errorf("dynamic client not initialized")
+// ownedID requires all ownership metadata, not just a shared managed-by label.
+// Bootstrap entries and resources created by earlier PoCs are never adopted.
+func ownedID(obj *unstructured.Unstructured) (string, error) {
+	id := obj.GetAnnotations()[crdIDAnnotation]
+	namespace, err := serviceAccountNamespace(id)
+	if err != nil || obj.GetLabels()[crdManagedByLabel] != crdManagedByValue ||
+		obj.GetLabels()[crdPurposeLabel] != crdPurposeValue ||
+		obj.GetLabels()[crdNamespaceLabel] != namespace ||
+		obj.GetName() != crdEntryName(id) {
+		return "", fmt.Errorf("ClusterStaticEntry %q is not an owned ServiceAccount registration", obj.GetName())
 	}
-	err := c.dynamicClient.Resource(clusterSPIFFEIDGVR).Delete(ctx, crdSPIFFEIDName(namespace), metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
+	return id, nil
+}
+
+func (c *CRDClient) Upsert(ctx context.Context, id string) error {
+	desired, err := c.buildClusterStaticEntry(id)
+	if err != nil {
 		return err
 	}
-	return nil
-}
+	existing, err := c.client.Get(ctx, desired.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = c.client.Create(ctx, desired, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if existingID, err := ownedID(existing); err != nil {
+		return err
+	} else if existingID != id {
+		return fmt.Errorf("ClusterStaticEntry %q belongs to ServiceAccount %q, not %q", existing.GetName(), existingID, id)
+	}
+	if existing.GetDeletionTimestamp() != nil {
+		return fmt.Errorf("ClusterStaticEntry %q is still being deleted", existing.GetName())
+	}
 
-// upsertCRD ensures the ClusterSPIFFEID for the id's namespace exists.
-func (c *Client) upsertCRD(ctx context.Context, id string) error {
-	return c.upsertNamespaceCRD(ctx, namespaceFromID(id))
-}
-
-// upsertCRDBatch ensures a ClusterSPIFFEID exists for each unique namespace in ids.
-func (c *Client) upsertCRDBatch(ctx context.Context, ids []string) error {
-	var errs []error
-	for _, namespace := range uniqueNamespaces(ids) {
-		if err := c.upsertNamespaceCRD(ctx, namespace); err != nil {
-			errs = append(errs, fmt.Errorf("upsert ClusterSPIFFEID for namespace %s: %w", namespace, err))
+	// Preserve controller fields, status, finalizers, and unrelated metadata.
+	// Update uses the observed resourceVersion, so an ownership change or a
+	// delete/recreate racing this write fails instead of being overwritten.
+	updated := existing.DeepCopy()
+	for key, value := range desired.Object["spec"].(map[string]any) {
+		if err := unstructured.SetNestedField(updated.Object, value, "spec", key); err != nil {
+			return err
 		}
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("upsertCRDBatch had %d errors: %w", len(errs), errs[0])
+	if reflect.DeepEqual(existing.Object, updated.Object) {
+		return nil
 	}
-	c.log.Debug("upsertCRDBatch completed", logfields.Count, len(ids))
-	return nil
+	_, err = c.client.Update(ctx, updated, metav1.UpdateOptions{})
+	return err
 }
 
-// deleteCRD is a no-op: a single service account removal does not delete the
-// namespace-scoped ClusterSPIFFEID; the controller-manager drops the entry when
-// the pod goes away, and the CR is removed only when the namespace is unenrolled.
-func (c *Client) deleteCRD(_ context.Context, _ string) error {
-	return nil
-}
-
-// deleteCRDBatch deletes the ClusterSPIFFEID for each unique namespace in ids.
-// This is invoked when a namespace is unenrolled.
-func (c *Client) deleteCRDBatch(ctx context.Context, ids []string) error {
+func (c *CRDClient) UpsertBatch(ctx context.Context, ids []string) error {
 	var errs []error
-	for _, namespace := range uniqueNamespaces(ids) {
-		if err := c.deleteNamespaceCRD(ctx, namespace); err != nil {
-			errs = append(errs, fmt.Errorf("delete ClusterSPIFFEID for namespace %s: %w", namespace, err))
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("deleteCRDBatch had %d errors: %w", len(errs), errs[0])
-	}
-	c.log.Debug("deleteCRDBatch completed", logfields.Count, len(ids))
-	return nil
-}
-
-// uniqueNamespaces returns the distinct namespaces from a list of "namespace/serviceaccount" ids.
-func uniqueNamespaces(ids []string) []string {
-	seen := make(map[string]struct{}, len(ids))
-	var namespaces []string
 	for _, id := range ids {
-		ns := namespaceFromID(id)
-		if _, ok := seen[ns]; ok {
-			continue
+		if err := c.Upsert(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("upsert ServiceAccount %q: %w", id, err))
 		}
-		seen[ns] = struct{}{}
-		namespaces = append(namespaces, ns)
 	}
-	return namespaces
+	return errors.Join(errs...)
+}
+
+func (c *CRDClient) Delete(ctx context.Context, id string) error {
+	if _, err := serviceAccountNamespace(id); err != nil {
+		return err
+	}
+	existing, err := c.client.Get(ctx, crdEntryName(id), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := ownedID(existing); err != nil {
+		return err
+	}
+	return c.deleteEntry(ctx, existing)
+}
+
+func (c *CRDClient) deleteEntry(ctx context.Context, obj *unstructured.Unstructured) error {
+	uid, version := obj.GetUID(), obj.GetResourceVersion()
+	err := c.client.Delete(ctx, obj.GetName(), metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &version},
+	})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (c *CRDClient) DeleteBatch(ctx context.Context, ids []string) error {
+	var errs []error
+	for _, id := range ids {
+		if err := c.Delete(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("delete ServiceAccount %q: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (c *CRDClient) Prune(ctx context.Context, namespace string, keep func(string) bool) error {
+	if namespace != "" && len(validation.IsDNS1123Label(namespace)) != 0 {
+		return fmt.Errorf("invalid namespace %q", namespace)
+	}
+	if keep == nil {
+		return fmt.Errorf("ServiceAccount pruning requires an initialized desired-state inventory")
+	}
+	selector := labels.Set{
+		crdManagedByLabel: crdManagedByValue,
+		crdPurposeLabel:   crdPurposeValue,
+	}
+	if namespace != "" {
+		selector[crdNamespaceLabel] = namespace
+	}
+	options := metav1.ListOptions{LabelSelector: selector.String(), Limit: 500}
+	var errs []error
+	for {
+		list, err := c.client.List(ctx, options)
+		if err != nil {
+			return errors.Join(append(errs, fmt.Errorf("list ServiceAccount registrations: %w", err))...)
+		}
+		for i := range list.Items {
+			obj := &list.Items[i]
+			id, err := ownedID(obj)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if !keep(id) {
+				if err := c.deleteEntry(ctx, obj); err != nil {
+					errs = append(errs, fmt.Errorf("prune ServiceAccount %q: %w", id, err))
+				}
+			}
+		}
+		if list.GetContinue() == "" {
+			return errors.Join(errs...)
+		}
+		options.Continue = list.GetContinue()
+	}
 }

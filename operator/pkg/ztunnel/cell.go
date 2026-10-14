@@ -4,11 +4,14 @@
 package ztunnel
 
 import (
+	"time"
+
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/reconciler"
 
 	"github.com/cilium/cilium/daemon/k8s"
+	"github.com/cilium/cilium/operator/auth/spire"
 	"github.com/cilium/cilium/operator/pkg/ztunnel/config"
 	ztunnelReconciler "github.com/cilium/cilium/operator/pkg/ztunnel/reconciler"
 	"github.com/cilium/cilium/pkg/metrics"
@@ -45,9 +48,14 @@ func registerEnrollmentReconciler(
 	params reconciler.Params,
 	ops reconciler.Operations[*table.EnrolledNamespace],
 	tbl statedb.RWTable[*table.EnrolledNamespace],
+	client spire.SpireClient,
 ) error {
-	if !cfg.EnableZTunnel {
+	if !cfg.EnableZTunnel || client == nil {
 		return nil
+	}
+	pruning := reconciler.WithoutPruning()
+	if _, ok := client.(spire.ServiceAccountPruner); ok {
+		pruning = reconciler.WithPruning(time.Minute)
 	}
 	_, err := reconciler.Register(
 		params,
@@ -57,7 +65,7 @@ func registerEnrollmentReconciler(
 		(*table.EnrolledNamespace).GetStatus,
 		ops,
 		nil, // no batch operations support
-		reconciler.WithoutPruning(),
+		pruning,
 	)
 	if err != nil {
 		return err

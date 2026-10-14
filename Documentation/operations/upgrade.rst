@@ -424,6 +424,14 @@ Changed Options
 The following options have been modified in this version of Cilium to behave
 differently than in prior releases:
 
+* The experimental operator flag ``enable-ztunnel-spiffeid-crd`` retains its name
+  but now registers one ``ClusterStaticEntry`` per enrolled ServiceAccount
+  instead of namespace-wide ``ClusterSPIFFEID`` rules. It requires ztunnel and
+  SPIRE mutual authentication. Existing CRD deployments must prepare
+  ClusterStaticEntry reconciliation and remove verified legacy rules and their
+  generated entries on every SPIRE server before relying on account-deletion
+  semantics. See :ref:`ztunnel_spire_crd_migration`; migration is not automatic.
+
 * The Helm option ``clustermesh.config.clusters`` now supports a new format based on a dict
   in addition to the previous list format. The new format is recommended for users installing
   Cilium ClusterMesh without Cilium CLI and could allow you to organize your clusters definition
