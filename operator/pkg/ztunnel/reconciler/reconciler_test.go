@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/cilium/cilium/operator/pkg/ztunnel/spire"
 	k8sTables "github.com/cilium/cilium/pkg/k8s/tables"
 	"github.com/cilium/cilium/pkg/ztunnel/table"
 )
@@ -35,6 +37,7 @@ type mockSpireClient struct {
 	deleteBatchFunc func(ctx context.Context, ids []string) error
 	upsertFunc      func(ctx context.Context, id string) error
 	deleteFunc      func(ctx context.Context, id string) error
+	initializedFunc func() <-chan struct{}
 	initialized     chan struct{}
 }
 
@@ -75,6 +78,9 @@ func (m *mockSpireClient) Delete(ctx context.Context, id string) error {
 }
 
 func (m *mockSpireClient) Initialized() <-chan struct{} {
+	if m.initializedFunc != nil {
+		return m.initializedFunc()
+	}
 	return m.initialized
 }
 
@@ -690,6 +696,106 @@ func TestEnrollmentReconciler_Start_WaitsForSpireInit(t *testing.T) {
 		require.Equal(t, "enrolled-ns/sa1", id)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for upsert after SPIRE init")
+	}
+}
+
+func TestEnrollmentReconciler_Start_DeletionDuringSpireInit(t *testing.T) {
+	db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+	initializeTables(db, saTbl, enrolledTbl)
+	enrollNamespace(db, enrolledTbl, "enrolled-ns")
+	insertServiceAccounts(t, db, saTbl, "enrolled-ns", "sa1")
+	_, prunes := ops.spireClient.(spire.ServiceAccountPruner)
+	require.False(t, prunes)
+
+	mock.initialized = make(chan struct{})
+	waiting := make(chan struct{})
+	signalWaiting := sync.OnceFunc(func() { close(waiting) })
+	release := sync.OnceFunc(func() { close(mock.initialized) })
+	mock.initializedFunc = func() <-chan struct{} {
+		signalWaiting()
+		return mock.initialized
+	}
+	var registered sync.Map
+	registered.Store("enrolled-ns/sa1", struct{}{})
+	deleted := make(chan string, 10)
+	mock.deleteFunc = func(_ context.Context, id string) error {
+		registered.Delete(id)
+		deleted <- id
+		return nil
+	}
+	require.NoError(t, ops.Start(t.Context()))
+	t.Cleanup(func() {
+		release()
+		require.NoError(t, ops.Stop(nil))
+	})
+
+	select {
+	case <-waiting:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for backend readiness wait")
+	}
+	deleteServiceAccount(db, saTbl, "enrolled-ns", "sa1")
+	select {
+	case id := <-deleted:
+		t.Fatalf("unexpected deletion before SPIRE initialization: %s", id)
+	default:
+	}
+	release()
+
+	select {
+	case id := <-deleted:
+		require.Equal(t, "enrolled-ns/sa1", id)
+		_, remains := registered.Load(id)
+		require.False(t, remains)
+	case <-time.After(5 * time.Second):
+		t.Fatal("deletion during SPIRE initialization was lost")
+	}
+}
+
+func TestEnrollmentReconciler_Start_CancelDuringSpireInit(t *testing.T) {
+	db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+	initializeTables(db, saTbl, enrolledTbl)
+	enrollNamespace(db, enrolledTbl, "enrolled-ns")
+	insertServiceAccounts(t, db, saTbl, "enrolled-ns", "sa1")
+	mock.initialized = make(chan struct{})
+	waiting := make(chan struct{})
+	signalWaiting := sync.OnceFunc(func() { close(waiting) })
+	release := sync.OnceFunc(func() { close(mock.initialized) })
+	mock.initializedFunc = func() <-chan struct{} {
+		signalWaiting()
+		return mock.initialized
+	}
+	mutations := make(chan string, 10)
+	mock.upsertFunc = func(_ context.Context, id string) error {
+		mutations <- id
+		return nil
+	}
+	mock.deleteFunc = mock.upsertFunc
+	require.NoError(t, ops.Start(t.Context()))
+	t.Cleanup(func() {
+		release()
+		require.NoError(t, ops.Stop(nil))
+	})
+
+	select {
+	case <-waiting:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for backend readiness wait")
+	}
+	deleteServiceAccount(db, saTbl, "enrolled-ns", "sa1")
+	stopped := make(chan error, 1)
+	go func() { stopped <- ops.Stop(nil) }()
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not stop while SPIRE initialization was pending")
+	}
+	release()
+	select {
+	case id := <-mutations:
+		t.Fatalf("unexpected mutation after cancellation: %s", id)
+	default:
 	}
 }
 

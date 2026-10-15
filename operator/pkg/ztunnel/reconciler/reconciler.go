@@ -171,13 +171,25 @@ func (ops *EnrollmentReconciler) Update(ctx context.Context, txn statedb.ReadTxn
 var _ reconciler.Operations[*table.EnrolledNamespace] = &EnrollmentReconciler{}
 
 func (ops *EnrollmentReconciler) waitForInitialization(ctx context.Context) error {
+	if err := ops.waitForInventories(ctx); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-ops.spireClient.Initialized():
+		return ctx.Err()
+	}
+}
+
+func (ops *EnrollmentReconciler) waitForInventories(ctx context.Context) error {
 	if ops.spireClient == nil {
 		return fmt.Errorf("SPIRE registration client is disabled")
 	}
 	txn := ops.db.ReadTxn()
 	_, saInit := ops.serviceAccountTable.Initialized(txn)
 	_, nsInit := ops.enrolledNamespaceTable.Initialized(txn)
-	for _, initialized := range []<-chan struct{}{saInit, nsInit, ops.spireClient.Initialized()} {
+	for _, initialized := range []<-chan struct{}{saInit, nsInit} {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -250,7 +262,7 @@ func (ops *EnrollmentReconciler) Start(cell.HookContext) error {
 		defer ops.workers.Done()
 		ops.logger.Info("Starting mTLS enrollment reconciler")
 
-		if err := ops.waitForInitialization(ctx); err != nil {
+		if err := ops.waitForInventories(ctx); err != nil {
 			return
 		}
 
@@ -259,6 +271,11 @@ func (ops *EnrollmentReconciler) Start(cell.HookContext) error {
 		wtxn.Commit()
 		if err != nil {
 			ops.logger.Error("failed to create change iterator", logfields.Error, err.Error())
+			return
+		}
+
+		// Retain deletions that happen while the SPIRE connection initializes.
+		if err := ops.waitForInitialization(ctx); err != nil {
 			return
 		}
 
