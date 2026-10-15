@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/cilium/hive/cell"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -47,6 +48,27 @@ type CRDClient struct {
 
 var _ SpireClient = (*CRDClient)(nil)
 var _ ServiceAccountPruner = (*CRDClient)(nil)
+
+func newCRDClient(params params) (*CRDClient, error) {
+	if params.K8sClient == nil || !params.K8sClient.IsEnabled() || params.K8sClient.RestConfig() == nil {
+		return nil, fmt.Errorf("SPIRE CRD backend requires a Kubernetes client")
+	}
+	if _, err := spiffeid.TrustDomainFromString(params.ClientConfig.SpiffeTrustDomain); err != nil {
+		return nil, fmt.Errorf("invalid SPIRE CRD trust domain: %w", err)
+	}
+	dynClient, err := dynamic.NewForConfig(params.K8sClient.RestConfig())
+	if err != nil {
+		return nil, fmt.Errorf("create Kubernetes client for SPIRE CRD backend: %w", err)
+	}
+	client := &CRDClient{
+		client:      dynClient.Resource(clusterStaticEntryGVR),
+		trustDomain: params.ClientConfig.SpiffeTrustDomain,
+		entryCfg:    params.EntryConfig,
+		initialized: make(chan struct{}),
+	}
+	params.Lifecycle.Append(cell.Hook{OnStart: client.onStart})
+	return client, nil
+}
 
 func (c *CRDClient) onStart(cell.HookContext) error {
 	close(c.initialized)

@@ -107,6 +107,11 @@ For ``shop/checkout``, both backends use:
 The trust domain comes from ``mesh-auth-spiffe-trust-domain``. This is the
 ServiceAccount-based, static-parent model, not Pod/node-agent registration.
 
+The SPIRE client package keeps shared interfaces, entry configuration, and
+backend selection in ``client.go``. The direct Entry API implementation is in
+``entry_client.go``, and the Kubernetes CRD implementation is in
+``crd_client.go``.
+
 To select the CRD backend, retain the historical operator flag
 ``--enable-ztunnel-spiffeid-crd=true``. Despite its name, it now creates
 ``ClusterStaticEntry`` resources, not namespace-wide ``ClusterSPIFFEID`` rules.
