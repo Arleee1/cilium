@@ -56,8 +56,12 @@ The following options have been introduced in this version of Cilium:
   ``ztunnel-ca-type=spire``; the default internal CA is unchanged. Earlier CRD
   deployments must prepare ClusterStaticEntry reconciliation and remove verified
   legacy rules and their generated entries on every SPIRE server before relying
-  on account-deletion semantics. See :ref:`ztunnel_spire_crd_migration`;
-  migration is not automatic.
+  on account-deletion semantics. Ownership now uses only
+  ``app.kubernetes.io/managed-by=cilium-operator-ztunnel``. Existing entries with
+  the old broad ``cilium-operator`` value are not automatically owned or adopted,
+  even if their names and account annotations match. Explicitly verify and
+  migrate those entries before expecting reconciliation; see
+  :ref:`ztunnel_spire_crd_migration`. Migration is not automatic.
 
 * The Prometheus container port names can now be configured via the Helm values
   ``prometheus.portName``, ``operator.prometheus.portName``,

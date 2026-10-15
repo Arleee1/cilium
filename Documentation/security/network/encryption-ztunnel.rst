@@ -142,13 +142,28 @@ on ``clusterstaticentries`` when ztunnel uses the SPIRE CA and
 ``authentication.mutual.spire.enabled`` is enabled; custom RBAC must provide the
 same permissions.
 
-Resources carry explicit ownership, namespace, and full account identity
-metadata. Names contain a hash of the complete namespace/account key. The
-operator does not adopt foreign or bootstrap resources, or attach invalid
-namespaced owner references to these cluster-scoped objects. It prunes owned
-orphan registrations after both inventories initialize and every minute
-thereafter. Failed account deletions also requeue enrolled namespaces for
-cleanup; namespace deletion does not depend on accounts still being present.
+The sole ownership marker is
+``app.kubernetes.io/managed-by=cilium-operator-ztunnel`` on
+``ClusterStaticEntry.metadata.labels``. Resources with a missing or different
+value are not adopted. Do not put this feature-specific label on bootstrap or
+foreign resources. ``spec.className`` selects consuming SPIRE
+controller-managers; it does not identify the resource's producer.
+
+The ``spire.cilium.io/service-account`` annotation stores the validated
+``namespace/serviceaccount`` key used to associate registrations with accounts
+and scope namespace cleanup. Missing or malformed identity data causes an
+error, not deletion; account-specific updates and deletions also reject a
+mismatched identity. Names remain deterministic and contain a hash of the
+complete account key, but names and additional labels do not establish
+ownership. Separate purpose and namespace labels are no longer written or
+required. Namespaced owner references are not valid for these cluster-scoped
+objects.
+
+The operator prunes owned orphan registrations after both inventories
+initialize and every minute thereafter. Failed account deletions also requeue
+enrolled namespaces for cleanup; namespace deletion does not depend on accounts
+still being present. Updates retain resourceVersion checks, and deletions retain
+UID and resourceVersion preconditions.
 
 A successful CRD operation means Kubernetes accepted the desired change.
 ``Initialized`` means backend initialization, not convergence of all SPIRE
@@ -161,22 +176,33 @@ certificates or terminate established connections.
 Migrating earlier CRD deployments
 ----------------------------------
 
-This change does not automatically migrate or delete earlier namespace rules.
-Before relying on ServiceAccount deletion semantics:
+This change does not automatically migrate or delete earlier namespace rules
+or adopt ClusterStaticEntry resources with the old broad
+``app.kubernetes.io/managed-by=cilium-operator`` value. Before relying on
+ServiceAccount deletion semantics:
 
 #. Prepare ClusterStaticEntry reconciliation, RBAC, the configured trust domain,
    and ``/ztunnel`` parenting on every server. Stop old operator writers so a
    mixed-version rollout cannot recreate namespace-wide rules.
+#. Inspect existing per-account ClusterStaticEntry resources individually.
+   Explicitly verify each intended registration's ServiceAccount annotation,
+   SPIFFE ID, parent, and selectors before manually migrating its managed-by
+   value to ``cilium-operator-ztunnel``. Preserve the valid account annotation.
+   Alternatively, plan verified removal and recreation of obsolete entries,
+   accounting for an issuance gap. An old-label entry at the generated name
+   blocks that account's upsert until it is explicitly migrated or removed.
+   Never bulk-relabel resources using the old broad value: bootstrap and foreign
+   resources must remain untouched.
 #. Upgrade the operator using the same CRD flag. Confirm that each current
    enrolled ServiceAccount has an owned ClusterStaticEntry, including accounts
    without Pods. Verify the generated registrations and delegated certificate
    issuance against each SPIRE replica separately.
 #. Inspect and remove only verified legacy operator-created ClusterSPIFFEID
    namespace rules after the replacement registrations work. Also inspect any
-   superseded account entries from older ClusterStaticEntry PoCs, which lack the
-   new ownership metadata and are not automatically adopted. Do not bulk-delete
-   by the shared ``app.kubernetes.io/managed-by`` label, or remove bootstrap
-   resources such as ``ztunnel`` and ``spire-agent-node-alias``.
+   superseded account entries from older ClusterStaticEntry PoCs, which are not
+   automatically adopted. Do not bulk-delete by the old broad managed-by value
+   or by label presence alone. Never remove bootstrap resources such as
+   ``ztunnel`` and ``spire-agent-node-alias``.
 #. Verify that the old rules and their generated registrations have disappeared
    from every server. Test that deleting one ServiceAccount removes only its
    registration while its Pods remain, and that deleting a Pod alone leaves its

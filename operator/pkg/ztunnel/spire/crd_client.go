@@ -30,10 +30,7 @@ var clusterStaticEntryGVR = schema.GroupVersionResource{
 
 const (
 	crdManagedByLabel = "app.kubernetes.io/managed-by"
-	crdManagedByValue = "cilium-operator"
-	crdPurposeLabel   = "spire.cilium.io/registration"
-	crdPurposeValue   = "ztunnel-serviceaccount"
-	crdNamespaceLabel = "spire.cilium.io/namespace"
+	crdManagedByValue = "cilium-operator-ztunnel"
 	crdIDAnnotation   = "spire.cilium.io/service-account"
 	maxCRDNameLen     = 63
 )
@@ -80,8 +77,7 @@ func crdEntryName(id string) string {
 }
 
 func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructured, error) {
-	namespace, err := serviceAccountNamespace(id)
-	if err != nil {
+	if _, err := serviceAccountNamespace(id); err != nil {
 		return nil, err
 	}
 	entry := c.entryCfg.entry(c.trustDomain, id)
@@ -98,8 +94,6 @@ func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructur
 	obj.SetName(crdEntryName(id))
 	obj.SetLabels(map[string]string{
 		crdManagedByLabel: crdManagedByValue,
-		crdPurposeLabel:   crdPurposeValue,
-		crdNamespaceLabel: namespace,
 	})
 	// A namespaced ServiceAccount cannot own a cluster-scoped resource.
 	obj.SetAnnotations(map[string]string{crdIDAnnotation: id})
@@ -111,16 +105,15 @@ func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructur
 	return obj, nil
 }
 
-// ownedID requires all ownership metadata, not just a shared managed-by label.
-// Bootstrap entries and resources created by earlier PoCs are never adopted.
+// ownedID checks the producer label before validating the account identity used
+// to scope mutations. Identity metadata does not establish ownership.
 func ownedID(obj *unstructured.Unstructured) (string, error) {
-	id := obj.GetAnnotations()[crdIDAnnotation]
-	namespace, err := serviceAccountNamespace(id)
-	if err != nil || obj.GetLabels()[crdManagedByLabel] != crdManagedByValue ||
-		obj.GetLabels()[crdPurposeLabel] != crdPurposeValue ||
-		obj.GetLabels()[crdNamespaceLabel] != namespace ||
-		obj.GetName() != crdEntryName(id) {
+	if obj.GetLabels()[crdManagedByLabel] != crdManagedByValue {
 		return "", fmt.Errorf("ClusterStaticEntry %q is not an owned ServiceAccount registration", obj.GetName())
+	}
+	id := obj.GetAnnotations()[crdIDAnnotation]
+	if _, err := serviceAccountNamespace(id); err != nil {
+		return "", fmt.Errorf("ClusterStaticEntry %q: %w", obj.GetName(), err)
 	}
 	return id, nil
 }
@@ -184,8 +177,10 @@ func (c *CRDClient) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := ownedID(existing); err != nil {
+	if existingID, err := ownedID(existing); err != nil {
 		return err
+	} else if existingID != id {
+		return fmt.Errorf("ClusterStaticEntry %q belongs to ServiceAccount %q, not %q", existing.GetName(), existingID, id)
 	}
 	return c.deleteEntry(ctx, existing)
 }
@@ -220,10 +215,6 @@ func (c *CRDClient) Prune(ctx context.Context, namespace string, keep func(strin
 	}
 	selector := labels.Set{
 		crdManagedByLabel: crdManagedByValue,
-		crdPurposeLabel:   crdPurposeValue,
-	}
-	if namespace != "" {
-		selector[crdNamespaceLabel] = namespace
 	}
 	options := metav1.ListOptions{LabelSelector: selector.String(), Limit: 500}
 	var errs []error
@@ -237,6 +228,9 @@ func (c *CRDClient) Prune(ctx context.Context, namespace string, keep func(strin
 			id, err := ownedID(obj)
 			if err != nil {
 				errs = append(errs, err)
+				continue
+			}
+			if namespace != "" && !strings.HasPrefix(id, namespace+"/") {
 				continue
 			}
 			if !keep(id) {
