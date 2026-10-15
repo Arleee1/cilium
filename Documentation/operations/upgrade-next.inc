@@ -60,8 +60,13 @@ The following options have been introduced in this version of Cilium:
   ``app.kubernetes.io/managed-by=cilium-operator-ztunnel``. Existing entries with
   the old broad ``cilium-operator`` value are not automatically owned or adopted,
   even if their names and account annotations match. Explicitly verify and
-  migrate those entries before expecting reconciliation; see
-  :ref:`ztunnel_spire_crd_migration`. Migration is not automatic.
+  migrate those entries before expecting reconciliation. Resource names now
+  use ``ztunnel-<namespace>.<serviceaccount>`` up to Kubernetes' 253-character
+  limit, with a disjoint full-hash fallback only for oversized identities.
+  Existing hash-named resources are not automatically renamed or migrated;
+  they can coexist with new resources for the same account until explicitly
+  removed and recreated. See :ref:`ztunnel_spire_crd_migration`. Migration is
+  not automatic.
 
 * The Prometheus container port names can now be configured via the Helm values
   ``prometheus.portName``, ``operator.prometheus.portName``,

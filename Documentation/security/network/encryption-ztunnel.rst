@@ -158,11 +158,24 @@ The ``spire.cilium.io/service-account`` annotation stores the validated
 ``namespace/serviceaccount`` key used to associate registrations with accounts
 and scope namespace cleanup. Missing or malformed identity data causes an
 error, not deletion; account-specific updates and deletions also reject a
-mismatched identity. Names remain deterministic and contain a hash of the
-complete account key, but names and additional labels do not establish
-ownership. Separate purpose and namespace labels are no longer written or
-required. Namespaced owner references are not valid for these cluster-scoped
-objects.
+mismatched identity. Names and additional labels do not establish ownership.
+Separate purpose and namespace labels are no longer written or required.
+Namespaced owner references are not valid for these cluster-scoped objects.
+
+Resource names are ``ztunnel-<namespace>.<serviceaccount>``, for example
+``ztunnel-shop.checkout``. Dots and hyphens in the ServiceAccount name are
+preserved. Namespace names cannot contain dots, so the first dot separates the
+namespace from the account. These are Kubernetes DNS-subdomain names with a
+253-character limit, not 63-character DNS labels. No hash is added when this
+literal name fits.
+
+A valid namespace/account pair can exceed that limit: the prefix and separator
+add nine characters to names of up to 63 and 253 characters respectively. Only
+for those oversized pairs, the resource name is
+``ztunnel-hash-<full SHA-256 hex digest of namespace/serviceaccount>``. This
+77-character fallback contains no dots and therefore cannot collide with an
+ordinary resource name. It does not truncate the identity; the annotation,
+SPIFFE ID, parent ID, and selectors retain their complete values.
 
 The operator prunes owned orphan registrations after both inventories
 initialize and every minute thereafter. Failed account deletions also requeue
@@ -186,6 +199,16 @@ or adopt ClusterStaticEntry resources with the old broad
 ``app.kubernetes.io/managed-by=cilium-operator`` value. Before relying on
 ServiceAccount deletion semantics:
 
+#. Account for the resource-name transition as well as the ownership label.
+   Kubernetes resource names are immutable. Old hash-named ClusterStaticEntry
+   resources are not renamed, adopted, or relabeled automatically. The new
+   operator addresses the new name and can create a second resource for an
+   account whose old resource still exists. Pruning retains old owned resources
+   while their account remains enrolled; it is not a name-migration mechanism.
+   Normal inventory-based pruning still applies to owned orphan resources,
+   regardless of name. Plan explicit, verified removal and recreation under
+   the new names, including any resulting certificate-issuance gap. Changing
+   the managed-by label alone does not migrate a resource's name.
 #. Prepare ClusterStaticEntry reconciliation, RBAC, the configured trust domain,
    and ``/ztunnel`` parenting on every server. Stop old operator writers so a
    mixed-version rollout cannot recreate namespace-wide rules.
@@ -199,9 +222,9 @@ ServiceAccount deletion semantics:
    Never bulk-relabel resources using the old broad value: bootstrap and foreign
    resources must remain untouched.
 #. Upgrade the operator using the same CRD flag. Confirm that each current
-   enrolled ServiceAccount has an owned ClusterStaticEntry, including accounts
-   without Pods. Verify the generated registrations and delegated certificate
-   issuance against each SPIRE replica separately.
+   enrolled ServiceAccount has an owned ClusterStaticEntry at its expected new
+   name, including accounts without Pods. Verify the generated registrations
+   and delegated certificate issuance against each SPIRE replica separately.
 #. Inspect and remove only verified legacy operator-created ClusterSPIFFEID
    namespace rules after the replacement registrations work. Also inspect any
    superseded account entries from older ClusterStaticEntry PoCs, which are not

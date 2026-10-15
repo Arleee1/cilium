@@ -141,7 +141,7 @@ func (m *mockCRDResource) List(_ context.Context, opts metav1.ListOptions) (*uns
 
 func TestCRDClient_ServiceAccountParity(t *testing.T) {
 	c, resource := newTestCRDClient()
-	ids := []string{"shop/checkout", "shop/catalog", "other/checkout"}
+	ids := []string{"shop/checkout", "shop/catalog", "other/checkout", "shop-west/checkout.v2-prod"}
 	var entries []*types.Entry
 	direct := &EntryClient{
 		cfg:      ClientConfig{SpiffeTrustDomain: c.trustDomain},
@@ -182,32 +182,55 @@ func TestCRDClient_ServiceAccountParity(t *testing.T) {
 	resource.calls = nil
 	require.NoError(t, c.UpsertBatch(t.Context(), ids))
 	require.NoError(t, c.Upsert(t.Context(), ids[0]))
-	require.Len(t, resource.calls, 4)
+	require.Len(t, resource.calls, len(ids)+1)
 	for _, call := range resource.calls {
 		require.True(t, strings.HasPrefix(call, "get:"), call)
 	}
 }
 
 func TestCRDEntryNamesAndInvalidIDs(t *testing.T) {
-	ids := []string{
-		"a-b/c", "a/b-c", "a/b.c",
-		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 253),
-		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 252) + "t",
-	}
 	names := map[string]bool{}
-	for _, id := range ids {
-		name := crdEntryName(id)
-		require.Equal(t, name, crdEntryName(id))
-		require.LessOrEqual(t, len(name), maxCRDNameLen)
-		require.Empty(t, validation.IsDNS1123Label(name))
-		require.False(t, names[name], id)
+	for _, tt := range []struct {
+		id   string
+		name string
+	}{
+		{"shop/checkout", "ztunnel-shop.checkout"},
+		{"a-b/c", "ztunnel-a-b.c"},
+		{"a/b-c", "ztunnel-a.b-c"},
+		{"a/b.c", "ztunnel-a.b.c"},
+		{"shop-west/checkout.v2-prod", "ztunnel-shop-west.checkout.v2-prod"},
+		{strings.Repeat("n", 63) + "/s", "ztunnel-" + strings.Repeat("n", 63) + ".s"},
+		{strings.Repeat("n", 63) + "/" + strings.Repeat("s", 181), "ztunnel-" + strings.Repeat("n", 63) + "." + strings.Repeat("s", 181)},
+		{"n/" + strings.Repeat("s", 243), "ztunnel-n." + strings.Repeat("s", 243)},
+	} {
+		name := crdEntryName(tt.id)
+		require.Equal(t, tt.name, name)
+		require.LessOrEqual(t, len(name), 253)
+		require.Empty(t, validation.IsDNS1123Subdomain(name))
+		require.False(t, names[name], tt.id)
 		names[name] = true
 	}
+
 	c, resource := newTestCRDClient()
-	require.NoError(t, c.Upsert(t.Context(), ids[3]))
-	require.Equal(t, ids[3], resource.objects[crdEntryName(ids[3])].GetAnnotations()[crdIDAnnotation])
+	for _, id := range []string{
+		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 182),
+		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 253),
+		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 252) + "t",
+		strings.Repeat("n", 63) + "/" + strings.Repeat("s.", 126) + "s",
+		"n/" + strings.Repeat("s", 244),
+	} {
+		name := crdEntryName(id)
+		require.Equal(t, name, crdEntryName(id))
+		require.Regexp(t, "^ztunnel-hash-[a-f0-9]{64}$", name)
+		require.Len(t, name, 77)
+		require.Empty(t, validation.IsDNS1123Subdomain(name))
+		require.False(t, names[name], id)
+		names[name] = true
+		require.NoError(t, c.Upsert(t.Context(), id))
+		require.Equal(t, id, resource.objects[name].GetAnnotations()[crdIDAnnotation])
+	}
 	resource.calls = nil
-	for _, id := range []string{"", "shop", "shop/", "/sa", "a/b/c", "Upper/sa", "ns/Upper", strings.Repeat("n", 64) + "/sa", "ns/" + strings.Repeat("s", 254)} {
+	for _, id := range []string{"", "shop", "shop/", "/sa", "a/b/c", "Upper/sa", "ns/Upper", "shop.prod/sa", "ns/.sa", "ns/sa.", "ns/a..b", "ns/sa_name", strings.Repeat("n", 64) + "/sa", "ns/" + strings.Repeat("s", 254)} {
 		require.Error(t, c.Upsert(t.Context(), id), id)
 		require.Error(t, c.Delete(t.Context(), id), id)
 	}
@@ -216,6 +239,44 @@ func TestCRDEntryNamesAndInvalidIDs(t *testing.T) {
 	require.Error(t, c.Prune(t.Context(), "bad/namespace", func(string) bool { return false }))
 	require.Error(t, c.Prune(t.Context(), "", nil))
 	require.Empty(t, resource.calls)
+}
+
+func TestCRDEntryNameFallbackDoesNotCollideWithOrdinaryNames(t *testing.T) {
+	fallback := crdEntryName("shop/" + strings.Repeat("s", 253))
+	require.Regexp(t, "^ztunnel-hash-[a-f0-9]{64}$", fallback)
+	suffix := strings.TrimPrefix(fallback, "ztunnel-hash-")
+	ordinaryID := "hash/" + suffix
+	_, err := serviceAccountNamespace(ordinaryID)
+	require.NoError(t, err)
+	require.Equal(t, "ztunnel-hash."+suffix, crdEntryName(ordinaryID))
+	require.NotEqual(t, fallback, crdEntryName(ordinaryID))
+	require.NotContains(t, fallback, ".")
+}
+
+func TestCRDClient_HashNameMigrationIsExplicit(t *testing.T) {
+	for _, managedBy := range []string{crdManagedByValue, "cilium-operator"} {
+		t.Run(managedBy, func(t *testing.T) {
+			c, resource := newTestCRDClient()
+			id := "shop/checkout"
+			legacy, err := c.buildClusterStaticEntry(id)
+			require.NoError(t, err)
+			legacy.SetName("ztunnel-shop-checkout-1dfc2ea56f23fbee33054f9c71acbee4")
+			legacy.SetLabels(map[string]string{crdManagedByLabel: managedBy})
+			legacy, err = resource.Create(t.Context(), legacy, metav1.CreateOptions{})
+			require.NoError(t, err)
+			resource.calls = nil
+
+			require.NoError(t, c.Upsert(t.Context(), id))
+			require.Equal(t, []string{"get:ztunnel-shop.checkout", "create:ztunnel-shop.checkout"}, resource.calls)
+			require.Len(t, resource.objects, 2)
+			require.Equal(t, legacy, resource.objects[legacy.GetName()])
+			require.NoError(t, c.Prune(t.Context(), "shop", func(currentID string) bool { return currentID == id }))
+			require.Len(t, resource.objects, 2)
+			require.NoError(t, c.Delete(t.Context(), id))
+			require.Len(t, resource.objects, 1)
+			require.Equal(t, legacy, resource.objects[legacy.GetName()])
+		})
+	}
 }
 
 func TestCRDClient_IsolatedDeletion(t *testing.T) {

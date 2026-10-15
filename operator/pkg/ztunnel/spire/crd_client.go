@@ -33,7 +33,7 @@ const (
 	crdManagedByLabel = "app.kubernetes.io/managed-by"
 	crdManagedByValue = "cilium-operator-ztunnel"
 	crdIDAnnotation   = "spire.cilium.io/service-account"
-	maxCRDNameLen     = 63
+	maxCRDNameLen     = validation.DNS1123SubdomainMaxLength
 )
 
 // CRDClient persists one ClusterStaticEntry per ServiceAccount. Each SPIRE
@@ -89,13 +89,14 @@ func serviceAccountNamespace(id string) (string, error) {
 }
 
 func crdEntryName(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	suffix := "-" + hex.EncodeToString(sum[:16])
-	name := "ztunnel-" + strings.NewReplacer("/", "-", ".", "-").Replace(id)
-	if len(name) > maxCRDNameLen-len(suffix) {
-		name = name[:maxCRDNameLen-len(suffix)]
+	name := "ztunnel-" + strings.Replace(id, "/", ".", 1)
+	if len(name) <= maxCRDNameLen {
+		return name
 	}
-	return strings.TrimRight(name, "-") + suffix
+
+	// A dot-free fallback cannot collide with ordinary namespace.account names.
+	sum := sha256.Sum256([]byte(id))
+	return "ztunnel-hash-" + hex.EncodeToString(sum[:])
 }
 
 func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructured, error) {
