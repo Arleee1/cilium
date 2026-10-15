@@ -82,7 +82,7 @@ func TestClientBackendWiring(t *testing.T) {
 				}
 				require.NoError(t, h.Stop(log, t.Context()))
 			} else {
-				direct, ok := registration.(*Client)
+				direct, ok := registration.(*EntryClient)
 				require.True(t, ok)
 				require.Same(t, cs, direct.k8sClient)
 				require.Nil(t, direct.entry)

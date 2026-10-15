@@ -30,8 +30,8 @@ import (
 
 const notFoundError = "NotFound"
 
-// Client registers identities through the SPIRE Entry API.
-type Client struct {
+// EntryClient registers identities through the SPIRE Entry API.
+type EntryClient struct {
 	cfg         ClientConfig
 	log         *slog.Logger
 	entry       entryv1.EntryClient
@@ -41,10 +41,10 @@ type Client struct {
 	initialized chan struct{}
 }
 
-var _ SpireClient = (*Client)(nil)
+var _ SpireClient = (*EntryClient)(nil)
 
-func newEntryClient(params params) *Client {
-	client := &Client{
+func newEntryClient(params params) *EntryClient {
+	client := &EntryClient{
 		k8sClient:   params.K8sClient,
 		cfg:         params.ClientConfig,
 		entryCfg:    params.EntryConfig,
@@ -60,11 +60,11 @@ func newEntryClient(params params) *Client {
 }
 
 // Initialized returns a channel that is closed when the client is initialized.
-func (c *Client) Initialized() <-chan struct{} {
+func (c *EntryClient) Initialized() <-chan struct{} {
 	return c.initialized
 }
 
-func (c *Client) onStart(ctx cell.HookContext) error {
+func (c *EntryClient) onStart(ctx cell.HookContext) error {
 	go func() {
 		c.log.InfoContext(ctx, "Initializing SPIRE client")
 		attempts := 0
@@ -90,7 +90,7 @@ func (c *Client) onStart(ctx cell.HookContext) error {
 	return nil
 }
 
-func (c *Client) connect(ctx context.Context) (*grpc.ClientConn, error) {
+func (c *EntryClient) connect(ctx context.Context) (*grpc.ClientConn, error) {
 	timeoutCtx, cancelFunc := context.WithTimeout(ctx, c.cfg.SpireServerConnectionTimeout)
 	defer cancelFunc()
 
@@ -139,7 +139,7 @@ func (c *Client) connect(ctx context.Context) (*grpc.ClientConn, error) {
 
 // Upsert creates or updates the SPIFFE ID for the given ID.
 // The SPIFFE ID path and selectors are determined by the SpireEntryConfig.
-func (c *Client) Upsert(ctx context.Context, id string) error {
+func (c *EntryClient) Upsert(ctx context.Context, id string) error {
 	c.entryMutex.RLock()
 	defer c.entryMutex.RUnlock()
 	if c.entry == nil {
@@ -184,7 +184,7 @@ func (c *Client) Upsert(ctx context.Context, id string) error {
 
 // UpsertBatch creates or updates multiple SPIFFE entries at once.
 // For each ID, it checks if an entry exists and updates it, otherwise creates it.
-func (c *Client) UpsertBatch(ctx context.Context, ids []string) error {
+func (c *EntryClient) UpsertBatch(ctx context.Context, ids []string) error {
 	c.entryMutex.RLock()
 	defer c.entryMutex.RUnlock()
 
@@ -265,7 +265,7 @@ func (c *Client) UpsertBatch(ctx context.Context, ids []string) error {
 
 // Delete deletes the SPIFFE ID for the given ID.
 // The SPIFFE ID path is determined by the SpireEntryConfig.
-func (c *Client) Delete(ctx context.Context, id string) error {
+func (c *EntryClient) Delete(ctx context.Context, id string) error {
 	c.entryMutex.RLock()
 	defer c.entryMutex.RUnlock()
 	if c.entry == nil {
@@ -301,7 +301,7 @@ func (c *Client) Delete(ctx context.Context, id string) error {
 // DeleteBatch deletes multiple SPIFFE entries at once.
 // It lists all entries by parent ID, filters to the requested IDs, and deletes in batches.
 // This is more efficient than looking up each entry individually.
-func (c *Client) DeleteBatch(ctx context.Context, ids []string) error {
+func (c *EntryClient) DeleteBatch(ctx context.Context, ids []string) error {
 	c.entryMutex.RLock()
 	defer c.entryMutex.RUnlock()
 	if c.entry == nil {
@@ -394,7 +394,7 @@ func (c *Client) DeleteBatch(ctx context.Context, ids []string) error {
 
 // listEntries returns the list of entries for the given ID.
 // The maximum number of entries returned is 1, so page token can be ignored.
-func (c *Client) listEntries(ctx context.Context, id string) (*entryv1.ListEntriesResponse, error) {
+func (c *EntryClient) listEntries(ctx context.Context, id string) (*entryv1.ListEntriesResponse, error) {
 	return c.entry.ListEntries(ctx, &entryv1.ListEntriesRequest{
 		Filter: &entryv1.ListEntriesRequest_Filter{
 			BySpiffeId: &types.SPIFFEID{

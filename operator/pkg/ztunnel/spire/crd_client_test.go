@@ -143,7 +143,7 @@ func TestCRDClient_ServiceAccountParity(t *testing.T) {
 	c, resource := newTestCRDClient()
 	ids := []string{"shop/checkout", "shop/catalog", "other/checkout"}
 	var entries []*types.Entry
-	direct := &Client{
+	direct := &EntryClient{
 		cfg:      ClientConfig{SpiffeTrustDomain: c.trustDomain},
 		entryCfg: DefaultSpireEntryConfig(),
 		log:      hivetest.Logger(t),
