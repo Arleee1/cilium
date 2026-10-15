@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 
 	ztunnel "github.com/cilium/cilium/operator/pkg/ztunnel/config"
 	"github.com/cilium/cilium/pkg/backoff"
@@ -59,6 +60,9 @@ type ClientConfig struct {
 	SpireServerAddress           string        `mapstructure:"mesh-auth-spire-server-address"`
 	SpireServerConnectionTimeout time.Duration `mapstructure:"mesh-auth-spire-server-connection-timeout"`
 	SpiffeTrustDomain            string        `mapstructure:"mesh-auth-spiffe-trust-domain"`
+	// UseCRD creates one ClusterStaticEntry per enrolled ServiceAccount.
+	// Keep the historical flag name for compatibility with existing deployments.
+	UseCRD bool `mapstructure:"enable-ztunnel-spiffeid-crd"`
 }
 
 var defaultClientConfig = ClientConfig{
@@ -82,6 +86,9 @@ func (cfg ClientConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("mesh-auth-spiffe-trust-domain",
 		cfg.SpiffeTrustDomain,
 		"The trust domain for the SPIFFE identity.")
+	flags.Bool("enable-ztunnel-spiffeid-crd",
+		cfg.UseCRD,
+		"Register each ServiceAccount in an enrolled namespace using a ClusterStaticEntry instead of the SPIRE Entry API (requires ztunnel with the SPIRE CA).")
 }
 
 type params struct {
@@ -102,6 +109,42 @@ type SpireEntryConfig struct {
 	SelectorsFunc func(string) []*types.Selector
 }
 
+func (cfg SpireEntryConfig) entry(trustDomain, id string) *types.Entry {
+	return &types.Entry{
+		SpiffeId: &types.SPIFFEID{
+			TrustDomain: trustDomain,
+			Path:        cfg.PathFunc(id),
+		},
+		ParentId: &types.SPIFFEID{
+			TrustDomain: trustDomain,
+			Path:        cfg.ParentID,
+		},
+		Selectors: cfg.SelectorsFunc(id),
+	}
+}
+
+// SpireClient registers individual identities with the selected backend.
+// Successful mutations acknowledge backend acceptance, not convergence of all
+// SPIRE servers. Initialized reports backend initialization only.
+//
+// List is intentionally excluded: SPIRE entry IDs and Kubernetes resource names
+// are not interchangeable with logical ServiceAccount identities.
+type SpireClient interface {
+	Upsert(context.Context, string) error
+	UpsertBatch(context.Context, []string) error
+	Delete(context.Context, string) error
+	DeleteBatch(context.Context, []string) error
+	Initialized() <-chan struct{}
+}
+
+// ServiceAccountPruner is an optional capability for ownership-scoped cleanup.
+// An empty namespace selects all owned registrations. keep must consult current,
+// initialized inventories; it is called immediately before each deletion.
+type ServiceAccountPruner interface {
+	Prune(ctx context.Context, namespace string, keep func(id string) bool) error
+}
+
+// Client registers identities through the SPIRE Entry API.
 type Client struct {
 	cfg         ClientConfig
 	log         *slog.Logger
@@ -112,10 +155,36 @@ type Client struct {
 	initialized chan struct{}
 }
 
-// NewClient creates a new SPIRE client for ztunnel namespace enrollment.
-func NewClient(params params) *Client {
+var _ SpireClient = (*Client)(nil)
+
+// NewClient creates a SPIRE registration client for ztunnel namespace enrollment.
+func NewClient(params params) (SpireClient, error) {
+	if params.ClientConfig.UseCRD && !params.ZtunnelConfig.UseSpireCA() {
+		return nil, fmt.Errorf("enable-ztunnel-spiffeid-crd requires enable-ztunnel and ztunnel-ca-type=spire")
+	}
 	if !params.ZtunnelConfig.UseSpireCA() {
-		return nil
+		return nil, nil
+	}
+
+	if params.ClientConfig.UseCRD {
+		if params.K8sClient == nil || !params.K8sClient.IsEnabled() || params.K8sClient.RestConfig() == nil {
+			return nil, fmt.Errorf("SPIRE CRD backend requires a Kubernetes client")
+		}
+		if _, err := spiffeid.TrustDomainFromString(params.ClientConfig.SpiffeTrustDomain); err != nil {
+			return nil, fmt.Errorf("invalid SPIRE CRD trust domain: %w", err)
+		}
+		dynClient, err := dynamic.NewForConfig(params.K8sClient.RestConfig())
+		if err != nil {
+			return nil, fmt.Errorf("create Kubernetes client for SPIRE CRD backend: %w", err)
+		}
+		client := &CRDClient{
+			client:      dynClient.Resource(clusterStaticEntryGVR),
+			trustDomain: params.ClientConfig.SpiffeTrustDomain,
+			entryCfg:    params.EntryConfig,
+			initialized: make(chan struct{}),
+		}
+		params.Lifecycle.Append(cell.Hook{OnStart: client.onStart})
+		return client, nil
 	}
 
 	client := &Client{
@@ -130,7 +199,7 @@ func NewClient(params params) *Client {
 		OnStart: client.onStart,
 		OnStop:  func(_ cell.HookContext) error { return nil },
 	})
-	return client
+	return client, nil
 }
 
 // Initialized returns a channel that is closed when the client is initialized.
@@ -225,19 +294,7 @@ func (c *Client) Upsert(ctx context.Context, id string) error {
 		return err
 	}
 
-	desired := []*types.Entry{
-		{
-			SpiffeId: &types.SPIFFEID{
-				TrustDomain: c.cfg.SpiffeTrustDomain,
-				Path:        c.entryCfg.PathFunc(id),
-			},
-			ParentId: &types.SPIFFEID{
-				TrustDomain: c.cfg.SpiffeTrustDomain,
-				Path:        c.entryCfg.ParentID,
-			},
-			Selectors: c.entryCfg.SelectorsFunc(id),
-		},
-	}
+	desired := []*types.Entry{c.entryCfg.entry(c.cfg.SpiffeTrustDomain, id)}
 
 	if entries == nil || len(entries.Entries) == 0 {
 		_, err = c.entry.BatchCreateEntry(ctx, &entryv1.BatchCreateEntryRequest{Entries: desired})
@@ -285,17 +342,7 @@ func (c *Client) UpsertBatch(ctx context.Context, ids []string) error {
 	// Build entries for all IDs
 	entries := make([]*types.Entry, 0, len(ids))
 	for _, id := range ids {
-		entries = append(entries, &types.Entry{
-			SpiffeId: &types.SPIFFEID{
-				TrustDomain: c.cfg.SpiffeTrustDomain,
-				Path:        c.entryCfg.PathFunc(id),
-			},
-			ParentId: &types.SPIFFEID{
-				TrustDomain: c.cfg.SpiffeTrustDomain,
-				Path:        c.entryCfg.ParentID,
-			},
-			Selectors: c.entryCfg.SelectorsFunc(id),
-		})
+		entries = append(entries, c.entryCfg.entry(c.cfg.SpiffeTrustDomain, id))
 	}
 
 	resp, err := c.entry.BatchCreateEntry(ctx,

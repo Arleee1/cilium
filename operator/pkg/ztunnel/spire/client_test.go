@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/cilium/hive"
+	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
@@ -17,10 +19,111 @@ import (
 	"google.golang.org/grpc/codes"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 
+	ztunnel "github.com/cilium/cilium/operator/pkg/ztunnel/config"
 	"github.com/cilium/cilium/pkg/k8s/client"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 )
+
+func TestClientBackendWiring(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		caType  ztunnel.CAType
+		ztunnel bool
+		crd     bool
+		wantErr bool
+	}{
+		{name: "disabled", caType: ztunnel.CATypeInternal},
+		{name: "disabled SPIRE", caType: ztunnel.CATypeSpire},
+		{name: "internal ztunnel", caType: ztunnel.CATypeInternal, ztunnel: true},
+		{name: "direct SPIRE ztunnel", caType: ztunnel.CATypeSpire, ztunnel: true},
+		{name: "CRD SPIRE ztunnel", caType: ztunnel.CATypeSpire, ztunnel: true, crd: true},
+		{name: "CRD requires ztunnel", caType: ztunnel.CATypeSpire, crd: true, wantErr: true},
+		{name: "CRD requires SPIRE CA", caType: ztunnel.CATypeInternal, ztunnel: true, crd: true, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			log := hivetest.Logger(t)
+			_, cs := k8sClient.NewFakeClientset(log)
+			var registration SpireClient
+			h := hive.New(
+				Cell,
+				cell.Config(ztunnel.DefaultConfig),
+				cell.Provide(func() client.Clientset { return cs }),
+				cell.Invoke(func(c SpireClient) {
+					registration = c
+				}),
+			)
+			h.Viper().Set("ztunnel-ca-type", string(tt.caType))
+			h.Viper().Set("enable-ztunnel", tt.ztunnel)
+			h.Viper().Set("enable-ztunnel-spiffeid-crd", tt.crd)
+			err := h.Populate(log)
+			if tt.wantErr {
+				require.ErrorContains(t, err, "requires enable-ztunnel and ztunnel-ca-type=spire")
+				return
+			}
+			require.NoError(t, err)
+			if !tt.ztunnel || tt.caType != ztunnel.CATypeSpire {
+				require.Nil(t, registration)
+				return
+			}
+			if tt.crd {
+				require.IsType(t, &CRDClient{}, registration)
+				select {
+				case <-registration.Initialized():
+					t.Fatal("CRD backend initialized before lifecycle startup")
+				default:
+				}
+				require.NoError(t, h.Start(log, t.Context()))
+				select {
+				case <-registration.Initialized():
+				default:
+					t.Fatal("CRD backend did not initialize")
+				}
+				require.NoError(t, h.Stop(log, t.Context()))
+			} else {
+				require.IsType(t, &Client{}, registration)
+			}
+		})
+	}
+}
+
+type clientsetWithRestConfig struct {
+	client.Clientset
+	config *rest.Config
+}
+
+func (c clientsetWithRestConfig) RestConfig() *rest.Config {
+	return c.config
+}
+
+func TestCRDClientConstructionErrors(t *testing.T) {
+	log := hivetest.Logger(t)
+	fake, cs := k8sClient.NewFakeClientset(log)
+	cfg := defaultClientConfig
+	cfg.UseCRD = true
+	p := params{
+		Logger: log, Lifecycle: &cell.DefaultLifecycle{},
+		ClientConfig: cfg, EntryConfig: DefaultSpireEntryConfig(),
+		ZtunnelConfig: ztunnel.Config{EnableZTunnel: true, CAType: ztunnel.CATypeSpire},
+	}
+	_, err := NewClient(p)
+	require.ErrorContains(t, err, "requires a Kubernetes client")
+	fake.Disable()
+	p.K8sClient = cs
+	_, err = NewClient(p)
+	require.ErrorContains(t, err, "requires a Kubernetes client")
+	_, cs = k8sClient.NewFakeClientset(log)
+	p.K8sClient = clientsetWithRestConfig{Clientset: cs}
+	_, err = NewClient(p)
+	require.ErrorContains(t, err, "requires a Kubernetes client")
+	p.K8sClient = clientsetWithRestConfig{Clientset: cs, config: &rest.Config{Host: "https://[invalid"}}
+	_, err = NewClient(p)
+	require.ErrorContains(t, err, "create Kubernetes client")
+	p.ClientConfig.SpiffeTrustDomain = "invalid/domain"
+	_, err = NewClient(p)
+	require.ErrorContains(t, err, "invalid SPIRE CRD trust domain")
+}
 
 type mockEntryClient struct {
 	ListEntriesFunc           func(ctx context.Context, in *entryv1.ListEntriesRequest, opts ...grpc.CallOption) (*entryv1.ListEntriesResponse, error)

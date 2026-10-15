@@ -5,7 +5,9 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,7 +152,8 @@ func TestEnrollmentReconciler_Update(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, _, saTbl, mock, ops := setupTest(t)
+			db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+			enrollNamespace(db, enrolledTbl, tt.namespace)
 
 			if len(tt.saNames) > 0 {
 				insertServiceAccounts(t, db, saTbl, tt.namespace, tt.saNames...)
@@ -191,6 +194,10 @@ func TestEnrollmentReconciler_Delete(t *testing.T) {
 		wantErr       bool
 		wantDeleteIDs []string
 	}{
+		{
+			name:      "empty namespace does not send a synthetic account ID",
+			namespace: "empty-ns",
+		},
 		{
 			name:          "deletes service accounts in namespace",
 			namespace:     "test-ns",
@@ -241,8 +248,214 @@ func TestEnrollmentReconciler_Delete(t *testing.T) {
 	}
 }
 
+type pruningSpireClient struct {
+	*mockSpireClient
+	pruneFunc func(context.Context, string, func(string) bool) error
+}
+
+func (m *pruningSpireClient) Prune(ctx context.Context, namespace string, keep func(string) bool) error {
+	return m.pruneFunc(ctx, namespace, keep)
+}
+
+func registrationPruner(registrations map[string]bool) func(context.Context, string, func(string) bool) error {
+	return func(_ context.Context, namespace string, keep func(string) bool) error {
+		for id := range registrations {
+			if (namespace == "" || strings.HasPrefix(id, namespace+"/")) && !keep(id) {
+				delete(registrations, id)
+			}
+		}
+		return nil
+	}
+}
+
+func TestEnrollmentReconciler_RetriesFailedAccountDeletion(t *testing.T) {
+	for _, remaining := range [][]string{nil, {"keep"}} {
+		t.Run(fmt.Sprint(remaining), func(t *testing.T) {
+			db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+			enrollNamespace(db, enrolledTbl, "shop")
+			insertServiceAccounts(t, db, saTbl, "shop", remaining...)
+			registrations := map[string]bool{"shop/deleted": true}
+			for _, name := range remaining {
+				registrations["shop/"+name] = true
+			}
+			ops.spireClient = &pruningSpireClient{mock, registrationPruner(registrations)}
+			mock.deleteFunc = func(context.Context, string) error {
+				return errors.New("temporary delete failure")
+			}
+			ops.reconcileServiceAccount(t.Context(), ServiceAccount{&corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "deleted"},
+			}})
+			require.Contains(t, registrations, "shop/deleted")
+			require.Equal(t, float64(1), getMetric(ops.metrics, LabelValueMethodDelete, LabelValueOutcomeFail))
+			ns, _, found := enrolledTbl.Get(db.ReadTxn(), table.EnrolledNamespaceByName("shop"))
+			require.True(t, found)
+			require.Equal(t, reconciler.StatusKindPending, ns.Status.Kind)
+			require.NoError(t, ops.Update(t.Context(), db.ReadTxn(), 0, ns))
+			require.NotContains(t, registrations, "shop/deleted")
+			require.Len(t, registrations, len(remaining))
+		})
+	}
+}
+
+func TestEnrollmentReconciler_PrunesAfterFailedOrStaleUpsert(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+			enrollNamespace(db, enrolledTbl, "shop")
+			insertServiceAccounts(t, db, saTbl, "shop", "deleted-during-upsert")
+			registrations := map[string]bool{"shop/previously-deleted": true}
+			ops.spireClient = &pruningSpireClient{mock, registrationPruner(registrations)}
+			upsertErr := errors.New("upsert failed")
+			mock.upsertBatchFunc = func(_ context.Context, ids []string) error {
+				for _, id := range ids {
+					registrations[id] = true
+				}
+				deleteServiceAccount(db, saTbl, "shop", "deleted-during-upsert")
+				if fail {
+					return upsertErr
+				}
+				return nil
+			}
+			err := ops.Update(t.Context(), db.ReadTxn(), 0, &table.EnrolledNamespace{Name: "shop"})
+			if fail {
+				require.ErrorIs(t, err, upsertErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Empty(t, registrations)
+		})
+	}
+}
+
+func TestEnrollmentReconciler_CleanupErrorsRemainRetryable(t *testing.T) {
+	db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+	enrollNamespace(db, enrolledTbl, "shop")
+	insertServiceAccounts(t, db, saTbl, "shop", "keep")
+	upsertErr, pruneErr := errors.New("upsert failed"), errors.New("prune failed")
+	mock.upsertBatchFunc = func(context.Context, []string) error { return upsertErr }
+	ops.spireClient = &pruningSpireClient{mock, func(context.Context, string, func(string) bool) error { return pruneErr }}
+	err := ops.Update(t.Context(), db.ReadTxn(), 0, &table.EnrolledNamespace{Name: "shop"})
+	require.ErrorIs(t, err, upsertErr)
+	require.ErrorIs(t, err, pruneErr)
+	require.ErrorIs(t, ops.Prune(t.Context(), db.ReadTxn(), nil), pruneErr)
+	require.ErrorIs(t, ops.Delete(t.Context(), db.ReadTxn(), 0, &table.EnrolledNamespace{Name: "deleted-namespace"}), pruneErr)
+}
+
+func TestEnrollmentReconciler_CleansMissedEventsAndEmptyNamespaces(t *testing.T) {
+	db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+	enrollNamespace(db, enrolledTbl, "enrolled")
+	insertServiceAccounts(t, db, saTbl, "enrolled", "keep")
+	insertServiceAccounts(t, db, saTbl, "unenrolled", "stale")
+	registrations := map[string]bool{
+		"enrolled/keep": true, "enrolled/deleted": true,
+		"unenrolled/stale": true, "empty/stale": true, "gone/stale": true,
+	}
+	ops.spireClient = &pruningSpireClient{mock, registrationPruner(registrations)}
+	require.NoError(t, ops.Delete(t.Context(), db.ReadTxn(), 0, &table.EnrolledNamespace{Name: "empty"}))
+	require.NotContains(t, registrations, "empty/stale")
+	require.Contains(t, registrations, "gone/stale")
+	require.NoError(t, ops.Prune(t.Context(), db.ReadTxn(), nil))
+	require.Equal(t, map[string]bool{"enrolled/keep": true}, registrations)
+}
+
+func TestEnrollmentReconciler_GuardsStaleEvents(t *testing.T) {
+	db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+	enrollNamespace(db, enrolledTbl, "shop")
+	insertServiceAccounts(t, db, saTbl, "shop", "recreated")
+	staleTxn := db.ReadTxn()
+	ns := &table.EnrolledNamespace{Name: "shop"}
+	upserts := []string{}
+	mock.upsertFunc = func(_ context.Context, id string) error {
+		upserts = append(upserts, id)
+		return nil
+	}
+	mock.deleteFunc = func(context.Context, string) error {
+		t.Error("stale event deleted the recreated ServiceAccount")
+		return nil
+	}
+	mock.deleteBatchFunc = func(context.Context, []string) error {
+		t.Error("stale event deleted the reenrolled namespace")
+		return nil
+	}
+	ops.reconcileServiceAccount(t.Context(), ServiceAccount{&corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "recreated", UID: "old-uid"},
+	}})
+	require.Equal(t, []string{"shop/recreated"}, upserts)
+	require.NoError(t, ops.Delete(t.Context(), staleTxn, 0, ns))
+
+	txn := db.WriteTxn(enrolledTbl)
+	enrolledTbl.Delete(txn, ns)
+	txn.Commit()
+	mock.upsertBatchFunc = func(context.Context, []string) error {
+		t.Error("stale update recreated an unenrolled namespace registration")
+		return nil
+	}
+	require.NoError(t, ops.Update(t.Context(), staleTxn, 0, ns))
+}
+
+func TestEnrollmentReconciler_CleanupWaitsForInventoriesAndBackend(t *testing.T) {
+	for _, operation := range []string{"update", "delete", "prune"} {
+		t.Run(operation, func(t *testing.T) {
+			db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+			txn := db.WriteTxn(saTbl, enrolledTbl)
+			saReady := saTbl.RegisterInitializer(txn, "serviceaccounts")
+			nsReady := enrolledTbl.RegisterInitializer(txn, "namespaces")
+			txn.Commit()
+			mock.initialized = make(chan struct{})
+			if operation == "update" {
+				enrollNamespace(db, enrolledTbl, "shop")
+			}
+			called := make(chan struct{}, 1)
+			ops.spireClient = &pruningSpireClient{mock, func(context.Context, string, func(string) bool) error {
+				called <- struct{}{}
+				return nil
+			}}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				ns := &table.EnrolledNamespace{Name: "shop"}
+				switch operation {
+				case "update":
+					done <- ops.Update(ctx, db.ReadTxn(), 0, ns)
+				case "delete":
+					done <- ops.Delete(ctx, db.ReadTxn(), 0, ns)
+				case "prune":
+					done <- ops.Prune(ctx, db.ReadTxn(), nil)
+				}
+			}()
+			assertBlocked := func() {
+				t.Helper()
+				select {
+				case <-called:
+					t.Fatal("cleanup ran before all inventories and the backend initialized")
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			assertBlocked()
+			txn = db.WriteTxn(saTbl)
+			saReady(txn)
+			txn.Commit()
+			assertBlocked()
+			txn = db.WriteTxn(enrolledTbl)
+			nsReady(txn)
+			txn.Commit()
+			assertBlocked()
+			close(mock.initialized)
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("cleanup did not run after initialization")
+			}
+			require.Len(t, called, 1)
+		})
+	}
+}
+
 func TestEnrollmentReconciler_Update_OnlyIncludesMatchingNamespace(t *testing.T) {
-	db, _, saTbl, mock, ops := setupTest(t)
+	db, enrolledTbl, saTbl, mock, ops := setupTest(t)
+	enrollNamespace(db, enrolledTbl, "enrolled-ns")
 
 	// Insert SAs in two different namespaces.
 	insertServiceAccounts(t, db, saTbl, "enrolled-ns", "sa1", "sa2")
