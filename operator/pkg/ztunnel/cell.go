@@ -4,6 +4,8 @@
 package ztunnel
 
 import (
+	"time"
+
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/statedb"
 	"github.com/cilium/statedb/reconciler"
@@ -46,12 +48,17 @@ func registerEnrollmentReconciler(
 	params reconciler.Params,
 	ops reconciler.Operations[*table.EnrolledNamespace],
 	tbl statedb.RWTable[*table.EnrolledNamespace],
+	client spire.SpireClient,
 ) error {
 	// The reconciler manages SPIRE entries for enrolled namespaces, so it only
 	// runs when ztunnel is configured to use an external SPIRE CA. With the
 	// internal CA there is no SPIRE server to enroll against.
-	if !cfg.UseSpireCA() {
+	if !cfg.UseSpireCA() || client == nil {
 		return nil
+	}
+	pruning := reconciler.WithoutPruning()
+	if _, ok := client.(spire.ServiceAccountPruner); ok {
+		pruning = reconciler.WithPruning(time.Minute)
 	}
 	_, err := reconciler.Register(
 		params,
@@ -61,7 +68,7 @@ func registerEnrollmentReconciler(
 		(*table.EnrolledNamespace).GetStatus,
 		ops,
 		nil, // no batch operations support
-		reconciler.WithoutPruning(),
+		pruning,
 	)
 	if err != nil {
 		return err
