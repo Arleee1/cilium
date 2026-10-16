@@ -50,25 +50,6 @@ New Options
 
 The following options have been introduced in this version of Cilium:
 
-* The experimental operator flag ``enable-ztunnel-spiffeid-crd`` enables a
-  ``ClusterStaticEntry`` registration backend for HA SPIRE deployments, with one
-  resource per enrolled ServiceAccount. It requires ``enable-ztunnel`` and
-  ``ztunnel-ca-type=spire``; the default internal CA is unchanged. Earlier CRD
-  deployments must prepare ClusterStaticEntry reconciliation and remove verified
-  legacy rules and their generated entries on every SPIRE server before relying
-  on account-deletion semantics. Ownership now uses only
-  ``app.kubernetes.io/managed-by=cilium-operator-ztunnel``. Existing entries with
-  the old broad ``cilium-operator`` value are not automatically owned or adopted,
-  even if their names and account annotations match. Explicitly verify and
-  migrate those entries before expecting reconciliation. Resource names now
-  use ``ztunnel-<namespace>.<serviceaccount>`` up to Kubernetes' 253-character
-  limit. Oversized identities use a dot-free readable namespace/account prefix
-  plus the full SHA-256 hash. Existing hash-named resources, including earlier
-  hash-only ``ztunnel-hash-<hash>`` fallbacks, are not automatically renamed or
-  adopted. They can coexist with new resources for the same account until
-  explicitly removed and recreated. Pruning is not migration; see
-  :ref:`ztunnel_spire_crd_migration`.
-
 * The Prometheus container port names can now be configured via the Helm values
   ``prometheus.portName``, ``operator.prometheus.portName``,
   ``envoy.prometheus.portName``, ``hubble.metrics.portName``,

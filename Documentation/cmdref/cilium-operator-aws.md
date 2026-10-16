@@ -73,7 +73,6 @@ cilium-operator-aws [flags]
       --enable-policy-secrets-sync                                 Enables fan-in TLS secrets sync from multiple namespaces to singular namespace (specified by policy-secrets-namespace flag)
       --enable-wireguard                                           Enable WireGuard
       --enable-ztunnel                                             Use zTunnel as Cilium's encryption infrastructure
-      --enable-ztunnel-spiffeid-crd                                Register each ServiceAccount in an enrolled namespace using a ClusterStaticEntry instead of the SPIRE Entry API (requires ztunnel with the SPIRE CA).
       --enforce-ingress-https                                      Enforces https for host having matching TLS host in Ingress. Incoming traffic to http listener will return 308 http error code with respective location in header. (default true)
       --eni-gc-interval duration                                   Interval for garbage collection of unattached ENIs. Set to 0 to disable (default 5m0s)
       --eni-gc-tags stringToString                                 Additional tags attached to ENIs created by Cilium. Dangling ENIs with this tag will be garbage collected (default [])
