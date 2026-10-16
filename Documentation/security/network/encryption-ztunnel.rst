@@ -172,10 +172,15 @@ literal name fits.
 A valid namespace/account pair can exceed that limit: the prefix and separator
 add nine characters to names of up to 63 and 253 characters respectively. Only
 for those oversized pairs, the resource name is
-``ztunnel-hash-<full SHA-256 hex digest of namespace/serviceaccount>``. This
-77-character fallback contains no dots and therefore cannot collide with an
-ordinary resource name. It does not truncate the identity; the annotation,
-SPIFFE ID, parent ID, and selectors retain their complete values.
+``ztunnel-hash-<namespace>-<account-prefix>-<hash>``. The readable
+namespace/account portion replaces the slash and any account dots with hyphens.
+It is limited to 175 characters, with trailing hyphens at the cut removed, so
+the complete name fits the 253-character limit. The namespace is kept in full.
+The hash is the full 64-character lowercase hexadecimal SHA-256 digest of the
+original, unmodified ``namespace/serviceaccount`` identity. This fallback
+contains no dots and therefore cannot collide with an ordinary resource name.
+Only the readable name portion is shortened; the annotation, SPIFFE ID, parent
+ID, and selectors retain their complete values.
 
 The operator prunes owned orphan registrations after both inventories
 initialize and every minute thereafter. Failed account deletions also requeue
@@ -201,9 +206,10 @@ ServiceAccount deletion semantics:
 
 #. Account for the resource-name transition as well as the ownership label.
    Kubernetes resource names are immutable. Old hash-named ClusterStaticEntry
-   resources are not renamed, adopted, or relabeled automatically. The new
-   operator addresses the new name and can create a second resource for an
-   account whose old resource still exists. Pruning retains old owned resources
+   resources, including earlier hash-only ``ztunnel-hash-<hash>`` fallbacks,
+   are not renamed, adopted, or relabeled automatically. The new operator
+   addresses the new name and can create a second resource for an account
+   whose old resource still exists. Pruning retains old owned resources
    while their account remains enrolled; it is not a name-migration mechanism.
    Normal inventory-based pruning still applies to owned orphan resources,
    regardless of name. Plan explicit, verified removal and recreation under

@@ -96,7 +96,11 @@ func crdEntryName(id string) string {
 
 	// A dot-free fallback cannot collide with ordinary namespace.account names.
 	sum := sha256.Sum256([]byte(id))
-	return "ztunnel-hash-" + hex.EncodeToString(sum[:])
+	hash := hex.EncodeToString(sum[:])
+	prefix := "ztunnel-hash-"
+	readable := strings.ReplaceAll(strings.ReplaceAll(id, "/", "-"), ".", "-")
+	readable = strings.TrimRight(readable[:maxCRDNameLen-len(prefix)-len(hash)-1], "-")
+	return prefix + readable + "-" + hash
 }
 
 func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructured, error) {

@@ -44,7 +44,6 @@ type ClientConfig struct {
 	SpireServerConnectionTimeout time.Duration `mapstructure:"mesh-auth-spire-server-connection-timeout"`
 	SpiffeTrustDomain            string        `mapstructure:"mesh-auth-spiffe-trust-domain"`
 	// UseCRD creates one ClusterStaticEntry per enrolled ServiceAccount.
-	// Keep the historical flag name for compatibility with existing deployments.
 	UseCRD bool `mapstructure:"enable-ztunnel-spiffeid-crd"`
 }
 

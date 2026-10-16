@@ -5,6 +5,7 @@ package spire
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -141,7 +142,11 @@ func (m *mockCRDResource) List(_ context.Context, opts metav1.ListOptions) (*uns
 
 func TestCRDClient_ServiceAccountParity(t *testing.T) {
 	c, resource := newTestCRDClient()
-	ids := []string{"shop/checkout", "shop/catalog", "other/checkout", "shop-west/checkout.v2-prod"}
+	ids := []string{
+		"shop/checkout", "shop/catalog", "other/checkout", "shop-west/checkout.v2-prod",
+		"shop-west/checkout.v2-prod-" + strings.Repeat("s", 236),
+		strings.Repeat("n", 63) + "/" + strings.Repeat("s.", 126) + "s",
+	}
 	var entries []*types.Entry
 	direct := &EntryClient{
 		cfg:      ClientConfig{SpiffeTrustDomain: c.trustDomain},
@@ -212,22 +217,83 @@ func TestCRDEntryNamesAndInvalidIDs(t *testing.T) {
 	}
 
 	c, resource := newTestCRDClient()
-	for _, id := range []string{
-		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 182),
-		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 253),
-		strings.Repeat("n", 63) + "/" + strings.Repeat("s", 252) + "t",
-		strings.Repeat("n", 63) + "/" + strings.Repeat("s.", 126) + "s",
-		"n/" + strings.Repeat("s", 244),
+	for _, tt := range []struct {
+		name     string
+		id       string
+		readable string
+	}{
+		{
+			name:     "254 bytes with maximum namespace",
+			id:       strings.Repeat("n", 63) + "/" + strings.Repeat("s", 182),
+			readable: strings.Repeat("n", 63) + "-" + strings.Repeat("s", 111),
+		},
+		{
+			name:     "254 bytes with minimum namespace",
+			id:       "n/" + strings.Repeat("s", 244),
+			readable: "n-" + strings.Repeat("s", 173),
+		},
+		{
+			name:     "maximum namespace and account",
+			id:       strings.Repeat("n", 63) + "/" + strings.Repeat("s", 253),
+			readable: strings.Repeat("n", 63) + "-" + strings.Repeat("s", 111),
+		},
+		{
+			name:     "different identity with same visible prefix",
+			id:       strings.Repeat("n", 63) + "/" + strings.Repeat("s", 252) + "t",
+			readable: strings.Repeat("n", 63) + "-" + strings.Repeat("s", 111),
+		},
+		{
+			name:     "maximum dotted account",
+			id:       strings.Repeat("n", 63) + "/" + strings.Repeat("s.", 126) + "s",
+			readable: strings.Repeat("n", 63) + "-" + strings.Repeat("s-", 55) + "s",
+		},
+		{
+			name:     "maximum hyphenated account with same visible prefix",
+			id:       strings.Repeat("n", 63) + "/" + strings.Repeat("s-", 126) + "s",
+			readable: strings.Repeat("n", 63) + "-" + strings.Repeat("s-", 55) + "s",
+		},
+		{
+			name:     "readable namespace and account",
+			id:       "shop-west/checkout.v2-prod-" + strings.Repeat("s", 236),
+			readable: "shop-west-checkout-v2-prod-" + strings.Repeat("s", 148),
+		},
+		{
+			name:     "dot at truncation",
+			id:       "n/" + strings.Repeat("s", 172) + "." + strings.Repeat("s", 80),
+			readable: "n-" + strings.Repeat("s", 172),
+		},
+		{
+			name:     "hyphen at truncation",
+			id:       "n/" + strings.Repeat("s", 172) + "-" + strings.Repeat("s", 80),
+			readable: "n-" + strings.Repeat("s", 172),
+		},
+		{
+			name:     "hyphen run at truncation",
+			id:       "n/" + strings.Repeat("s", 170) + "---" + strings.Repeat("s", 80),
+			readable: "n-" + strings.Repeat("s", 170),
+		},
 	} {
-		name := crdEntryName(id)
-		require.Equal(t, name, crdEntryName(id))
-		require.Regexp(t, "^ztunnel-hash-[a-f0-9]{64}$", name)
-		require.Len(t, name, 77)
-		require.Empty(t, validation.IsDNS1123Subdomain(name))
-		require.False(t, names[name], id)
-		names[name] = true
-		require.NoError(t, c.Upsert(t.Context(), id))
-		require.Equal(t, id, resource.objects[name].GetAnnotations()[crdIDAnnotation])
+		t.Run(tt.name, func(t *testing.T) {
+			name := crdEntryName(tt.id)
+			hash := fmt.Sprintf("%x", sha256.Sum256([]byte(tt.id)))
+			require.Equal(t, "ztunnel-hash-"+tt.readable+"-"+hash, name)
+			require.Equal(t, name, crdEntryName(tt.id))
+			require.LessOrEqual(t, len(name), 253)
+			require.NotContains(t, name, ".")
+			require.Empty(t, validation.IsDNS1123Subdomain(name))
+			require.False(t, names[name], tt.id)
+			names[name] = true
+			require.NoError(t, c.Upsert(t.Context(), tt.id))
+			obj := resource.objects[name]
+			require.Equal(t, tt.id, obj.GetAnnotations()[crdIDAnnotation])
+			namespace, account, _ := strings.Cut(tt.id, "/")
+			spec, found, err := unstructured.NestedMap(obj.Object, "spec")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Equal(t, "spiffe://test.cilium/ns/"+namespace+"/sa/"+account, spec["spiffeID"])
+			require.Equal(t, "spiffe://test.cilium/ztunnel", spec["parentID"])
+			require.Equal(t, []any{"k8s:ns:" + namespace, "k8s:sa:" + account}, spec["selectors"])
+		})
 	}
 	resource.calls = nil
 	for _, id := range []string{"", "shop", "shop/", "/sa", "a/b/c", "Upper/sa", "ns/Upper", "shop.prod/sa", "ns/.sa", "ns/sa.", "ns/a..b", "ns/sa_name", strings.Repeat("n", 64) + "/sa", "ns/" + strings.Repeat("s", 254)} {
@@ -243,7 +309,8 @@ func TestCRDEntryNamesAndInvalidIDs(t *testing.T) {
 
 func TestCRDEntryNameFallbackDoesNotCollideWithOrdinaryNames(t *testing.T) {
 	fallback := crdEntryName("shop/" + strings.Repeat("s", 253))
-	require.Regexp(t, "^ztunnel-hash-[a-f0-9]{64}$", fallback)
+	require.Regexp(t, "^ztunnel-hash-shop-s+-[a-f0-9]{64}$", fallback)
+	require.Len(t, fallback, 253)
 	suffix := strings.TrimPrefix(fallback, "ztunnel-hash-")
 	ordinaryID := "hash/" + suffix
 	_, err := serviceAccountNamespace(ordinaryID)
@@ -254,28 +321,49 @@ func TestCRDEntryNameFallbackDoesNotCollideWithOrdinaryNames(t *testing.T) {
 }
 
 func TestCRDClient_HashNameMigrationIsExplicit(t *testing.T) {
-	for _, managedBy := range []string{crdManagedByValue, "cilium-operator"} {
-		t.Run(managedBy, func(t *testing.T) {
-			c, resource := newTestCRDClient()
-			id := "shop/checkout"
-			legacy, err := c.buildClusterStaticEntry(id)
-			require.NoError(t, err)
-			legacy.SetName("ztunnel-shop-checkout-1dfc2ea56f23fbee33054f9c71acbee4")
-			legacy.SetLabels(map[string]string{crdManagedByLabel: managedBy})
-			legacy, err = resource.Create(t.Context(), legacy, metav1.CreateOptions{})
-			require.NoError(t, err)
-			resource.calls = nil
+	oversizedID := "shop/" + strings.Repeat("s", 253)
+	for _, tt := range []struct {
+		name       string
+		id         string
+		legacyName string
+	}{
+		{
+			name:       "hashed ordinary name",
+			id:         "shop/checkout",
+			legacyName: "ztunnel-shop-checkout-1dfc2ea56f23fbee33054f9c71acbee4",
+		},
+		{
+			name:       "hash-only oversized name",
+			id:         oversizedID,
+			legacyName: fmt.Sprintf("ztunnel-hash-%x", sha256.Sum256([]byte(oversizedID))),
+		},
+	} {
+		for _, managedBy := range []string{crdManagedByValue, "cilium-operator"} {
+			t.Run(tt.name+"/"+managedBy, func(t *testing.T) {
+				c, resource := newTestCRDClient()
+				name := crdEntryName(tt.id)
+				require.NotEqual(t, tt.legacyName, name)
+				legacy, err := c.buildClusterStaticEntry(tt.id)
+				require.NoError(t, err)
+				legacy.SetName(tt.legacyName)
+				legacy.SetLabels(map[string]string{crdManagedByLabel: managedBy})
+				legacy, err = resource.Create(t.Context(), legacy, metav1.CreateOptions{})
+				require.NoError(t, err)
+				resource.calls = nil
 
-			require.NoError(t, c.Upsert(t.Context(), id))
-			require.Equal(t, []string{"get:ztunnel-shop.checkout", "create:ztunnel-shop.checkout"}, resource.calls)
-			require.Len(t, resource.objects, 2)
-			require.Equal(t, legacy, resource.objects[legacy.GetName()])
-			require.NoError(t, c.Prune(t.Context(), "shop", func(currentID string) bool { return currentID == id }))
-			require.Len(t, resource.objects, 2)
-			require.NoError(t, c.Delete(t.Context(), id))
-			require.Len(t, resource.objects, 1)
-			require.Equal(t, legacy, resource.objects[legacy.GetName()])
-		})
+				require.NoError(t, c.Upsert(t.Context(), tt.id))
+				require.Equal(t, []string{"get:" + name, "create:" + name}, resource.calls)
+				require.Len(t, resource.objects, 2)
+				require.Equal(t, legacy, resource.objects[legacy.GetName()])
+				namespace, err := serviceAccountNamespace(tt.id)
+				require.NoError(t, err)
+				require.NoError(t, c.Prune(t.Context(), namespace, func(currentID string) bool { return currentID == tt.id }))
+				require.Len(t, resource.objects, 2)
+				require.NoError(t, c.Delete(t.Context(), tt.id))
+				require.Len(t, resource.objects, 1)
+				require.Equal(t, legacy, resource.objects[legacy.GetName()])
+			})
+		}
 	}
 }
 

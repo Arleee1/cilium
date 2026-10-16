@@ -62,11 +62,12 @@ The following options have been introduced in this version of Cilium:
   even if their names and account annotations match. Explicitly verify and
   migrate those entries before expecting reconciliation. Resource names now
   use ``ztunnel-<namespace>.<serviceaccount>`` up to Kubernetes' 253-character
-  limit, with a disjoint full-hash fallback only for oversized identities.
-  Existing hash-named resources are not automatically renamed or migrated;
-  they can coexist with new resources for the same account until explicitly
-  removed and recreated. See :ref:`ztunnel_spire_crd_migration`. Migration is
-  not automatic.
+  limit. Oversized identities use a dot-free readable namespace/account prefix
+  plus the full SHA-256 hash. Existing hash-named resources, including earlier
+  hash-only ``ztunnel-hash-<hash>`` fallbacks, are not automatically renamed or
+  adopted. They can coexist with new resources for the same account until
+  explicitly removed and recreated. Pruning is not migration; see
+  :ref:`ztunnel_spire_crd_migration`.
 
 * The Prometheus container port names can now be configured via the Helm values
   ``prometheus.portName``, ``operator.prometheus.portName``,
