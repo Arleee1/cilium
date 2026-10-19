@@ -136,6 +136,16 @@
 {{- end }}
 
 {{/* validate Cilium operator */}}
+{{- range .Values.operator.extraArgs }}
+  {{- if regexMatch "^--enable-ztunnel-spiffeid-crd($|=)" . }}
+    {{ fail "Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use encryption.ztunnel.spire.useCRD instead." }}
+  {{- end }}
+{{- end }}
+{{- if .Values.encryption.ztunnel.spire.useCRD }}
+  {{- if not (and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") .Values.authentication.mutual.spire.enabled) }}
+    {{ fail "encryption.ztunnel.spire.useCRD=true requires encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true." }}
+  {{- end }}
+{{- end }}
 {{- if .Values.ciliumEndpointSlice.enabled }}
   {{- if eq .Values.disableEndpointCRD true }}
     {{ fail "if Cilium Endpoint Slice is enabled (.Values.ciliumEndpointSlice.enabled=true), it requires .Values.disableEndpointCRD=false" }}

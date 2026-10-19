@@ -2117,6 +2117,14 @@
               },
               "type": "object"
             },
+            "spire": {
+              "properties": {
+                "useCRD": {
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
+            },
             "terminationGracePeriodSeconds": {
               "type": "integer"
             },

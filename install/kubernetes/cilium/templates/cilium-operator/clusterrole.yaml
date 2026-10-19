@@ -111,7 +111,7 @@ rules:
   - get
   - list
   - watch
-{{- if and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") .Values.authentication.mutual.spire.enabled }}
+{{- if and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") .Values.authentication.mutual.spire.enabled .Values.encryption.ztunnel.spire.useCRD }}
 - apiGroups:
   - spire.spiffe.io
   resources:

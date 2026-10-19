@@ -1202,6 +1202,17 @@ encryption:
       # then manages SPIRE entries for enrolled namespaces). "internal" uses
       # Cilium's built-in CA and skips the SPIRE enrollment reconciler.
       type: internal
+    spire:
+      # -- Register ztunnel identities using ClusterStaticEntry resources instead
+      # of the SPIRE Entry API and grant the operator the required CRD permissions.
+      # Requires encryption.enabled=true, encryption.type=ztunnel,
+      # encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true.
+      # SPIRE may be chart-managed or external (authentication.mutual.spire.install.enabled=false).
+      # Install the ClusterStaticEntry CRD and SPIRE controller-manager separately.
+      # Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use this value instead.
+      # If RBAC or the operator ServiceAccount is managed externally, provide the
+      # equivalent ClusterStaticEntry permissions outside this chart.
+      useCRD: false
     # -- ztunnel container image.
     image:
       # @schema
