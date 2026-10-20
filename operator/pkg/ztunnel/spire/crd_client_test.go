@@ -35,6 +35,7 @@ type mockCRDResource struct {
 	calls         []string
 	before        func(verb, name string) error
 	list          func(metav1.ListOptions) (*unstructured.UnstructuredList, error)
+	listOptions   []metav1.ListOptions
 	deleteOptions []metav1.DeleteOptions
 	version       int
 }
@@ -120,6 +121,7 @@ func (m *mockCRDResource) Delete(_ context.Context, name string, opts metav1.Del
 }
 
 func (m *mockCRDResource) List(_ context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	m.listOptions = append(m.listOptions, opts)
 	if err := m.call("list", ""); err != nil {
 		return nil, err
 	}
@@ -164,11 +166,13 @@ func TestCRDClient_ServiceAccountParity(t *testing.T) {
 	require.Len(t, resource.objects, len(ids))
 	for i, id := range ids {
 		obj := resource.objects[crdEntryName(id)]
+		namespace, _, _ := strings.Cut(id, "/")
 		require.Equal(t, "ClusterStaticEntry", obj.GetKind())
 		require.Equal(t, "spire.spiffe.io/v1alpha1", obj.GetAPIVersion())
 		require.Empty(t, obj.GetOwnerReferences())
 		require.Equal(t, map[string]string{
 			"app.kubernetes.io/managed-by": "cilium-operator-ztunnel",
+			"spire.cilium.io/namespace":    namespace,
 		}, obj.GetLabels())
 		require.Equal(t, map[string]string{crdIDAnnotation: id}, obj.GetAnnotations())
 		spec, found, err := unstructured.NestedMap(obj.Object, "spec")
@@ -287,6 +291,7 @@ func TestCRDEntryNamesAndInvalidIDs(t *testing.T) {
 			obj := resource.objects[name]
 			require.Equal(t, tt.id, obj.GetAnnotations()[crdIDAnnotation])
 			namespace, account, _ := strings.Cut(tt.id, "/")
+			require.Equal(t, namespace, obj.GetLabels()[crdNamespaceLabel])
 			spec, found, err := unstructured.NestedMap(obj.Object, "spec")
 			require.NoError(t, err)
 			require.True(t, found)
@@ -411,6 +416,225 @@ func TestCRDClient_PreservesControllerFields(t *testing.T) {
 	require.Equal(t, "spiffe://test.cilium/ztunnel", spec["parentID"])
 }
 
+func TestCRDClient_NamespaceLabelRecovery(t *testing.T) {
+	for _, operation := range []string{"upsert", "global-prune"} {
+		for _, label := range []string{"missing", "empty", "wrong", "correct"} {
+			t.Run(operation+"/"+label, func(t *testing.T) {
+				c, resource := newTestCRDClient()
+				id := "shop/checkout"
+				require.NoError(t, c.Upsert(t.Context(), id))
+				obj := resource.objects[crdEntryName(id)]
+				if operation == "global-prune" {
+					delete(resource.objects, obj.GetName())
+					obj.SetName("custom-registration-name")
+					resource.objects[obj.GetName()] = obj
+					require.NoError(t, unstructured.SetNestedField(obj.Object, "custom-parent", "spec", "parentID"))
+				}
+				name := obj.GetName()
+				obj.SetFinalizers([]string{"spire.spiffe.io/entry"})
+				objLabels := obj.GetLabels()
+				objLabels["other.example/label"] = "keep"
+				switch label {
+				case "missing":
+					delete(objLabels, crdNamespaceLabel)
+				case "empty":
+					objLabels[crdNamespaceLabel] = ""
+				case "wrong":
+					objLabels[crdNamespaceLabel] = "other"
+				}
+				obj.SetLabels(objLabels)
+				obj.SetAnnotations(map[string]string{
+					crdIDAnnotation:            id,
+					"other.example/annotation": "keep",
+				})
+				require.NoError(t, unstructured.SetNestedField(obj.Object, "spire", "spec", "className"))
+				obj.Object["status"] = map[string]any{"entryID": "opaque-id"}
+				before := obj.DeepCopy()
+				reconcile := func() error {
+					if operation == "upsert" {
+						return c.Upsert(t.Context(), id)
+					}
+					return c.Prune(t.Context(), "", func(currentID string) bool {
+						require.Equal(t, id, currentID)
+						return true
+					})
+				}
+				firstCall := "get:" + name
+				if operation == "global-prune" {
+					firstCall = "list:"
+				}
+				resource.calls = nil
+				require.NoError(t, reconcile())
+				expectedCalls := []string{firstCall}
+				if label != "correct" {
+					expectedCalls = append(expectedCalls, "update:"+name)
+				}
+				require.Equal(t, expectedCalls, resource.calls)
+				updated := resource.objects[name].DeepCopy()
+				expected := before.DeepCopy()
+				require.NoError(t, unstructured.SetNestedField(expected.Object, "shop", "metadata", "labels", crdNamespaceLabel))
+				expected.SetResourceVersion(updated.GetResourceVersion())
+				require.Equal(t, expected, updated)
+
+				resource.calls = nil
+				require.NoError(t, reconcile())
+				require.Equal(t, []string{firstCall}, resource.calls)
+				require.Equal(t, updated, resource.objects[name])
+
+				resource.listOptions = nil
+				require.NoError(t, c.Prune(t.Context(), "shop", func(currentID string) bool {
+					require.Equal(t, id, currentID)
+					return false
+				}))
+				require.Equal(t, []metav1.ListOptions{{
+					LabelSelector: "app.kubernetes.io/managed-by=cilium-operator-ztunnel,spire.cilium.io/namespace=shop",
+					Limit:         500,
+				}}, resource.listOptions)
+				require.Empty(t, resource.objects)
+				require.Len(t, resource.deleteOptions, 1)
+				require.Equal(t, updated.GetUID(), *resource.deleteOptions[0].Preconditions.UID)
+				require.Equal(t, updated.GetResourceVersion(), *resource.deleteOptions[0].Preconditions.ResourceVersion)
+			})
+		}
+	}
+}
+
+func TestCRDClient_NamespaceLabelConflicts(t *testing.T) {
+	for _, operation := range []string{"upsert", "global-prune"} {
+		for _, change := range []string{"ownership", "identity", "recreation"} {
+			t.Run(operation+"/"+change, func(t *testing.T) {
+				c, resource := newTestCRDClient()
+				id, name := "shop/checkout", crdEntryName("shop/checkout")
+				require.NoError(t, c.Upsert(t.Context(), id))
+				obj := resource.objects[name]
+				obj.SetLabels(map[string]string{crdManagedByLabel: crdManagedByValue})
+				var raced *unstructured.Unstructured
+				resource.before = func(verb, _ string) error {
+					if verb == "update" {
+						switch change {
+						case "ownership":
+							obj.SetLabels(map[string]string{crdManagedByLabel: "someone-else"})
+						case "identity":
+							obj.SetAnnotations(map[string]string{crdIDAnnotation: "other/checkout"})
+						case "recreation":
+							obj.SetUID("new-uid")
+						}
+						obj.SetResourceVersion("999")
+						raced = obj.DeepCopy()
+					}
+					return nil
+				}
+				var err error
+				if operation == "upsert" {
+					err = c.Upsert(t.Context(), id)
+				} else {
+					err = c.Prune(t.Context(), "", func(string) bool { return true })
+				}
+				require.True(t, apierrors.IsConflict(err), "%v", err)
+				require.NotNil(t, raced)
+				require.Equal(t, raced, resource.objects[name])
+				require.Empty(t, resource.deleteOptions)
+			})
+		}
+	}
+}
+
+func TestCRDClient_GlobalPruneNamespaceLabelErrors(t *testing.T) {
+	c, resource := newTestCRDClient()
+	ids := []string{"shop/one", "shop/two", "shop/invalid"}
+	require.NoError(t, c.UpsertBatch(t.Context(), ids))
+	for _, obj := range resource.objects {
+		obj.SetLabels(map[string]string{crdManagedByLabel: crdManagedByValue})
+	}
+	invalid := resource.objects[crdEntryName("shop/invalid")]
+	invalid.SetAnnotations(nil)
+	invalidBefore := invalid.DeepCopy()
+	failedBefore := resource.objects[crdEntryName("shop/one")].DeepCopy()
+	failure := errors.New("namespace label update failed")
+	resource.before = func(verb, name string) error {
+		if verb == "update" && name == failedBefore.GetName() {
+			return failure
+		}
+		return nil
+	}
+	keep := func(id string) bool {
+		require.Contains(t, ids, id)
+		return true
+	}
+	err := c.Prune(t.Context(), "", keep)
+	require.ErrorIs(t, err, failure)
+	require.ErrorContains(t, err, `update namespace label for ServiceAccount "shop/one"`)
+	require.ErrorContains(t, err, `invalid ServiceAccount ID ""`)
+	require.Equal(t, failedBefore, resource.objects[failedBefore.GetName()])
+	require.Equal(t, invalidBefore, resource.objects[invalid.GetName()])
+	require.Equal(t, "shop", resource.objects[crdEntryName("shop/two")].GetLabels()[crdNamespaceLabel])
+	require.Empty(t, resource.deleteOptions)
+
+	resource.before = nil
+	require.ErrorContains(t, c.Prune(t.Context(), "", keep), `invalid ServiceAccount ID ""`)
+	require.Equal(t, "shop", resource.objects[crdEntryName("shop/one")].GetLabels()[crdNamespaceLabel])
+	require.Equal(t, invalidBefore, resource.objects[invalid.GetName()])
+	invalid.SetAnnotations(map[string]string{crdIDAnnotation: "shop/invalid"})
+	require.NoError(t, c.Prune(t.Context(), "", keep))
+	require.Equal(t, "shop", resource.objects[invalid.GetName()].GetLabels()[crdNamespaceLabel])
+}
+
+func TestCRDClient_GlobalPruneNamespaceLabelPagination(t *testing.T) {
+	c, resource := newTestCRDClient()
+	ids := []string{"shop/one", "other/two"}
+	require.NoError(t, c.UpsertBatch(t.Context(), ids))
+	for _, obj := range resource.objects {
+		obj.SetLabels(map[string]string{crdManagedByLabel: crdManagedByValue})
+	}
+	pages := 0
+	resource.list = func(opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+		require.Equal(t, "app.kubernetes.io/managed-by=cilium-operator-ztunnel", opts.LabelSelector)
+		require.EqualValues(t, 500, opts.Limit)
+		list := &unstructured.UnstructuredList{}
+		if pages == 0 {
+			require.Empty(t, opts.Continue)
+			list.Items = []unstructured.Unstructured{*resource.objects[crdEntryName(ids[0])].DeepCopy()}
+			list.SetContinue("second-page")
+		} else {
+			require.Equal(t, "second-page", opts.Continue)
+			list.Items = []unstructured.Unstructured{*resource.objects[crdEntryName(ids[1])].DeepCopy()}
+		}
+		pages++
+		return list, nil
+	}
+	keepSecond := true
+	resource.before = func(verb, _ string) error {
+		if verb == "update" {
+			keepSecond = false
+		}
+		return nil
+	}
+	var checked []string
+	require.NoError(t, c.Prune(t.Context(), "", func(id string) bool {
+		checked = append(checked, id)
+		return id == ids[0] || keepSecond
+	}))
+	require.Equal(t, ids, checked)
+	require.Equal(t, 2, pages)
+	require.Len(t, resource.objects, 1)
+	require.Equal(t, "shop", resource.objects[crdEntryName(ids[0])].GetLabels()[crdNamespaceLabel])
+}
+
+func TestCRDClient_GlobalPruneTerminatingNamespaceLabel(t *testing.T) {
+	c, resource := newTestCRDClient()
+	id := "shop/checkout"
+	require.NoError(t, c.Upsert(t.Context(), id))
+	obj := resource.objects[crdEntryName(id)]
+	obj.SetLabels(map[string]string{crdManagedByLabel: crdManagedByValue})
+	now := metav1.Now()
+	obj.SetDeletionTimestamp(&now)
+	before := obj.DeepCopy()
+	resource.calls = nil
+	require.NoError(t, c.Prune(t.Context(), "", func(string) bool { return true }))
+	require.Equal(t, []string{"list:"}, resource.calls)
+	require.Equal(t, before, resource.objects[obj.GetName()])
+}
+
 func TestCRDClient_SingleLabelOwnership(t *testing.T) {
 	for _, legacyLabels := range []bool{false, true} {
 		t.Run(fmt.Sprint(legacyLabels), func(t *testing.T) {
@@ -421,12 +645,15 @@ func TestCRDClient_SingleLabelOwnership(t *testing.T) {
 			labels := map[string]string{crdManagedByLabel: "cilium-operator-ztunnel"}
 			if legacyLabels {
 				labels["spire.cilium.io/registration"] = "another-purpose"
-				labels["spire.cilium.io/namespace"] = "another-namespace"
+				labels[crdNamespaceLabel] = "another-namespace"
 			}
 			obj.SetLabels(labels)
 			require.NoError(t, unstructured.SetNestedField(obj.Object, "old", "spec", "parentID"))
 			require.NoError(t, c.Upsert(t.Context(), id))
-			require.Equal(t, labels, resource.objects[obj.GetName()].GetLabels())
+			expectedLabels := maps.Clone(labels)
+			expectedLabels[crdNamespaceLabel] = "shop"
+			require.Equal(t, expectedLabels, resource.objects[obj.GetName()].GetLabels())
+			resource.objects[obj.GetName()].SetLabels(labels)
 			require.NoError(t, c.Delete(t.Context(), id))
 			require.Empty(t, resource.objects)
 		})
@@ -441,6 +668,11 @@ func TestCRDClient_RefusesForeignOwnership(t *testing.T) {
 		{name: "missing"},
 		{name: "empty", labels: map[string]string{crdManagedByLabel: ""}},
 		{name: "foreign", labels: map[string]string{crdManagedByLabel: "another-operator"}},
+		{name: "foreign with namespace", labels: map[string]string{
+			crdManagedByLabel: "another-operator",
+			crdNamespaceLabel: "shop",
+		}},
+		{name: "namespace label only", labels: map[string]string{crdNamespaceLabel: "shop"}},
 		{name: "legacy", labels: map[string]string{
 			crdManagedByLabel:              "cilium-operator",
 			"spire.cilium.io/registration": "ztunnel-serviceaccount",
@@ -613,19 +845,22 @@ func TestCRDClient_ConcurrentIdentityChange(t *testing.T) {
 
 func TestCRDClient_PruneOwnershipAndScope(t *testing.T) {
 	c, resource := newTestCRDClient()
-	require.NoError(t, c.UpsertBatch(t.Context(), []string{"shop/keep", "shop/stale", "other/stale", "shopping/stale"}))
+	require.NoError(t, c.UpsertBatch(t.Context(), []string{"shop/keep", "shop/scoped-stale", "shop/stale", "shop/legacy", "other/stale", "shopping/stale"}))
+	scopedStale := resource.objects[crdEntryName("shop/scoped-stale")].DeepCopy()
+	legacy := resource.objects[crdEntryName("shop/legacy")]
+	legacy.SetLabels(map[string]string{crdManagedByLabel: crdManagedByValue})
 	stale := resource.objects[crdEntryName("shop/stale")]
 	delete(resource.objects, stale.GetName())
 	stale.SetName("custom-registration-name")
 	stale.SetLabels(map[string]string{
 		crdManagedByLabel:              crdManagedByValue,
 		"spire.cilium.io/registration": "another-purpose",
-		"spire.cilium.io/namespace":    "other",
+		crdNamespaceLabel:              "other",
 	})
 	resource.objects[stale.GetName()] = stale
 	resource.objects[crdEntryName("other/stale")].SetLabels(map[string]string{
-		crdManagedByLabel:           crdManagedByValue,
-		"spire.cilium.io/namespace": "shop",
+		crdManagedByLabel: crdManagedByValue,
+		crdNamespaceLabel: "shop",
 	})
 	for _, name := range []string{"ztunnel", "spire-agent-node-alias", "old-poc-entry"} {
 		obj := &unstructured.Unstructured{}
@@ -638,13 +873,36 @@ func TestCRDClient_PruneOwnershipAndScope(t *testing.T) {
 		checked = append(checked, id)
 		return id == "shop/keep"
 	}))
-	require.ElementsMatch(t, []string{"shop/keep", "shop/stale"}, checked)
-	require.NotContains(t, resource.objects, stale.GetName())
-	require.Equal(t, stale.GetUID(), *resource.deleteOptions[0].Preconditions.UID)
-	require.Equal(t, stale.GetResourceVersion(), *resource.deleteOptions[0].Preconditions.ResourceVersion)
+	require.ElementsMatch(t, []string{"shop/keep", "shop/scoped-stale"}, checked)
+	require.Equal(t, []metav1.ListOptions{{
+		LabelSelector: "app.kubernetes.io/managed-by=cilium-operator-ztunnel,spire.cilium.io/namespace=shop",
+		Limit:         500,
+	}}, resource.listOptions)
+	require.NotContains(t, resource.objects, scopedStale.GetName())
+	require.Equal(t, scopedStale.GetUID(), *resource.deleteOptions[0].Preconditions.UID)
+	require.Equal(t, scopedStale.GetResourceVersion(), *resource.deleteOptions[0].Preconditions.ResourceVersion)
+	require.Contains(t, resource.objects, stale.GetName())
+	require.Contains(t, resource.objects, legacy.GetName())
 	require.Contains(t, resource.objects, crdEntryName("other/stale"))
 	require.Contains(t, resource.objects, crdEntryName("shopping/stale"))
+	var expectedPreconditions []metav1.Preconditions
+	for _, id := range []string{"shop/legacy", "other/stale", "shopping/stale"} {
+		obj := resource.objects[crdEntryName(id)]
+		uid, rv := obj.GetUID(), obj.GetResourceVersion()
+		expectedPreconditions = append(expectedPreconditions, metav1.Preconditions{UID: &uid, ResourceVersion: &rv})
+	}
+	uid, rv := stale.GetUID(), stale.GetResourceVersion()
+	expectedPreconditions = append(expectedPreconditions, metav1.Preconditions{UID: &uid, ResourceVersion: &rv})
 	require.NoError(t, c.Prune(t.Context(), "", func(id string) bool { return id == "shop/keep" }))
+	require.Equal(t, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/managed-by=cilium-operator-ztunnel",
+		Limit:         500,
+	}, resource.listOptions[1])
+	var actualPreconditions []metav1.Preconditions
+	for _, opts := range resource.deleteOptions[1:] {
+		actualPreconditions = append(actualPreconditions, *opts.Preconditions)
+	}
+	require.ElementsMatch(t, expectedPreconditions, actualPreconditions)
 	require.Len(t, resource.objects, 4)
 	require.Contains(t, resource.objects, crdEntryName("shop/keep"))
 }
@@ -655,7 +913,7 @@ func TestCRDClient_PrunePaginationAndFailures(t *testing.T) {
 	pages := 0
 	resource.list = func(opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
 		require.EqualValues(t, 500, opts.Limit)
-		require.Equal(t, "app.kubernetes.io/managed-by=cilium-operator-ztunnel", opts.LabelSelector)
+		require.Equal(t, "app.kubernetes.io/managed-by=cilium-operator-ztunnel,spire.cilium.io/namespace=shop", opts.LabelSelector)
 		list := &unstructured.UnstructuredList{}
 		if pages == 0 {
 			require.Empty(t, opts.Continue)

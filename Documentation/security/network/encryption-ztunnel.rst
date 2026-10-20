@@ -115,6 +115,21 @@ This will:
 #. Remove the iptables rules from each pod's network namespace
 #. Notify ztunnel to stop processing traffic for those workloads
 
+When ``encryption.ztunnel.spire.useCRD=true``, each managed ``ClusterStaticEntry``
+has a ``spire.cilium.io/namespace`` label for namespace-scoped queries. Its
+``spire.cilium.io/service-account`` annotation still holds the full
+``namespace/serviceaccount`` identity. Only
+``app.kubernetes.io/managed-by=cilium-operator-ztunnel`` establishes ownership;
+the namespace label does not authorize adoption or deletion.
+
+Reconciliation backfills or corrects namespace labels on existing owned entries.
+The global orphan sweep, scheduled every minute, also repairs labels on retained
+entries and removes stale entries regardless of their namespace label. Cleanup
+of legacy unlabeled or mislabeled entries may wait for a successful global sweep;
+normal namespace pruning does not fall back to scanning every owned entry.
+Malformed identity annotations produce errors rather than permitting deletion.
+Label recovery does not rename resources or change their SPIRE specifications.
+
 Validate the Setup
 ==================
 

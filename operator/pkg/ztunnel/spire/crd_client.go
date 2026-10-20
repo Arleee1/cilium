@@ -32,6 +32,7 @@ var clusterStaticEntryGVR = schema.GroupVersionResource{
 const (
 	crdManagedByLabel = "app.kubernetes.io/managed-by"
 	crdManagedByValue = "cilium-operator-ztunnel"
+	crdNamespaceLabel = "spire.cilium.io/namespace"
 	crdIDAnnotation   = "spire.cilium.io/service-account"
 	maxCRDNameLen     = validation.DNS1123SubdomainMaxLength
 )
@@ -104,7 +105,8 @@ func crdEntryName(id string) string {
 }
 
 func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructured, error) {
-	if _, err := serviceAccountNamespace(id); err != nil {
+	namespace, err := serviceAccountNamespace(id)
+	if err != nil {
 		return nil, err
 	}
 	entry := c.entryCfg.entry(c.trustDomain, id)
@@ -121,6 +123,7 @@ func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructur
 	obj.SetName(crdEntryName(id))
 	obj.SetLabels(map[string]string{
 		crdManagedByLabel: crdManagedByValue,
+		crdNamespaceLabel: namespace,
 	})
 	// A namespaced ServiceAccount cannot own a cluster-scoped resource.
 	obj.SetAnnotations(map[string]string{crdIDAnnotation: id})
@@ -171,6 +174,9 @@ func (c *CRDClient) Upsert(ctx context.Context, id string) error {
 	// Update uses the observed resourceVersion, so an ownership change or a
 	// delete/recreate racing this write fails instead of being overwritten.
 	updated := existing.DeepCopy()
+	if err := unstructured.SetNestedField(updated.Object, desired.GetLabels()[crdNamespaceLabel], "metadata", "labels", crdNamespaceLabel); err != nil {
+		return err
+	}
 	for key, value := range desired.Object["spec"].(map[string]any) {
 		if err := unstructured.SetNestedField(updated.Object, value, "spec", key); err != nil {
 			return err
@@ -233,6 +239,9 @@ func (c *CRDClient) DeleteBatch(ctx context.Context, ids []string) error {
 	return errors.Join(errs...)
 }
 
+// Prune uses namespace labels only to narrow queries; the annotation scopes
+// deletion. Periodic global sweeps recover legacy or mislabeled registrations
+// without making every namespace prune list all owned entries.
 func (c *CRDClient) Prune(ctx context.Context, namespace string, keep func(string) bool) error {
 	if namespace != "" && len(validation.IsDNS1123Label(namespace)) != 0 {
 		return fmt.Errorf("invalid namespace %q", namespace)
@@ -242,6 +251,9 @@ func (c *CRDClient) Prune(ctx context.Context, namespace string, keep func(strin
 	}
 	selector := labels.Set{
 		crdManagedByLabel: crdManagedByValue,
+	}
+	if namespace != "" {
+		selector[crdNamespaceLabel] = namespace
 	}
 	options := metav1.ListOptions{LabelSelector: selector.String(), Limit: 500}
 	var errs []error
@@ -264,6 +276,21 @@ func (c *CRDClient) Prune(ctx context.Context, namespace string, keep func(strin
 				if err := c.deleteEntry(ctx, obj); err != nil {
 					errs = append(errs, fmt.Errorf("prune ServiceAccount %q: %w", id, err))
 				}
+				continue
+			}
+			// The global sweep also repairs query labels on retained entries.
+			// Do not rebuild the spec or rename resources during label recovery.
+			idNamespace, _, _ := strings.Cut(id, "/")
+			if obj.GetLabels()[crdNamespaceLabel] == idNamespace || obj.GetDeletionTimestamp() != nil {
+				continue
+			}
+			updated := obj.DeepCopy()
+			err = unstructured.SetNestedField(updated.Object, idNamespace, "metadata", "labels", crdNamespaceLabel)
+			if err == nil {
+				_, err = c.client.Update(ctx, updated, metav1.UpdateOptions{})
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("update namespace label for ServiceAccount %q: %w", id, err))
 			}
 		}
 		if list.GetContinue() == "" {
