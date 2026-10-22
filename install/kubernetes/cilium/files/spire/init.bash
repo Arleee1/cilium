@@ -19,12 +19,16 @@ done
 
 echo "Spire Server is up, initializing cilium spire entries..."
 
-AGENT_SPIFFE_ID="spiffe://{{ .Values.authentication.mutual.spire.trustDomain }}/ns/{{ .Values.authentication.mutual.spire.install.namespace }}/sa/spire-agent"
-AGENT_SELECTORS="-selector k8s_psat:agent_ns:{{ .Values.authentication.mutual.spire.install.namespace }} -selector k8s_psat:agent_sa:spire-agent"
+AGENT_SPIFFE_ID="spiffe://{{ .Values.authentication.mutual.spire.trustDomain }}/ns/{{ .Values.authentication.mutual.spire.install.namespace }}/sa/{{ .Values.authentication.mutual.spire.install.agent.serviceAccount.name }}"
+AGENT_SELECTORS="-selector k8s_psat:agent_ns:{{ .Values.authentication.mutual.spire.install.namespace }} -selector k8s_psat:agent_sa:{{ .Values.authentication.mutual.spire.install.agent.serviceAccount.name }}"
 CILIUM_AGENT_SPIFFE_ID="spiffe://{{ .Values.authentication.mutual.spire.trustDomain }}/cilium-agent"
 CILIUM_AGENT_SELECTORS="-selector k8s:ns:{{ include "cilium.namespace" . }} -selector k8s:sa:{{ .Values.serviceAccounts.cilium.name }}"
 CILIUM_OPERATOR_SPIFFE_ID="spiffe://{{ .Values.authentication.mutual.spire.trustDomain }}/cilium-operator"
 CILIUM_OPERATOR_SELECTORS="-selector k8s:ns:{{ include "cilium.namespace" . }} -selector k8s:sa:{{ .Values.serviceAccounts.operator.name }}"
+{{- if and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") }}
+ZTUNNEL_SPIFFE_ID="spiffe://{{ .Values.authentication.mutual.spire.trustDomain }}/ztunnel"
+ZTUNNEL_SELECTORS="-selector k8s:ns:{{ include "cilium.namespace" . }} -selector k8s:sa:{{ .Values.serviceAccounts.ztunnel.name }}"
+{{- end }}
 
 while pgrep spire-server > /dev/null;
 do
@@ -42,6 +46,13 @@ do
   if spire_server entry show ${SOCKET_FLAG} -spiffeID $CILIUM_OPERATOR_SPIFFE_ID $CILIUM_OPERATOR_SELECTORS | grep -q "Found 0 entries" &> /dev/null; then
     spire_server entry create ${SOCKET_FLAG} -spiffeID $CILIUM_OPERATOR_SPIFFE_ID -parentID $AGENT_SPIFFE_ID $CILIUM_OPERATOR_SELECTORS
   fi
+
+  {{- if and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") }}
+  echo "Ensuring ztunnel entry (required for delegated workload identities)"
+  if spire_server entry show ${SOCKET_FLAG} -spiffeID $ZTUNNEL_SPIFFE_ID $ZTUNNEL_SELECTORS | grep -q "Found 0 entries" &> /dev/null; then
+    spire_server entry create ${SOCKET_FLAG} -spiffeID $ZTUNNEL_SPIFFE_ID -parentID $AGENT_SPIFFE_ID $ZTUNNEL_SELECTORS
+  fi
+  {{- end }}
 
   echo "Cilium Spire entries are initialized successfully or already in-sync"
   sleep 30;

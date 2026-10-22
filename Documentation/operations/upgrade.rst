@@ -279,6 +279,30 @@ available during the upgrade:
   events will be lost.
 
 
+SPIRE CRD registration and server replicas
+------------------------------------------
+
+For a new bundled SPIRE installation, ``encryption.ztunnel.spire.useCRD=true``
+automatically includes the ``ClusterStaticEntry`` CRD, per-server controllers,
+and bootstrap registrations. Existing releases must install the CRD before
+upgrading because Helm does not install CRDs during upgrades. Set
+``authentication.mutual.spire.install.crds.enabled=false`` to opt out when the
+schema is managed externally, including when using external SPIRE.
+
+``authentication.mutual.spire.install.server.replicas`` scales independent
+server/controller units with one PVC each by default, not a replicated SQL
+database. Multiple servers use the conventional existing ``spire-upstream-ca``
+Secret unless ``server.ca.upstreamSecret`` overrides its name. A persistent
+single server does not start requiring that Secret automatically.
+
+Plan the trust and registration migration before enabling multiple servers.
+Pin ``server.ca.upstreamSecret`` to the intended existing root during that
+migration, and retain it when scaling down to one server. Connected upgrades
+reject automatic root-reference changes. Switching between PVC and disposable
+storage still requires explicit StatefulSet recreation; no PVC is deleted or
+converted automatically. See :ref:`ztunnel_spire_installation` for prerequisites,
+ownership, storage, and verification details.
+
 .. _kvstore_to_crd_migration:
 
 Migrating from kvstore-backed identities to Kubernetes CRD-backed identities

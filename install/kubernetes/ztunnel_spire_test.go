@@ -10,11 +10,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"helm.sh/helm/v4/pkg/chart/common"
-	chartutil "helm.sh/helm/v4/pkg/chart/common/util"
-	"helm.sh/helm/v4/pkg/chart/loader"
-	"helm.sh/helm/v4/pkg/engine"
-	"helm.sh/helm/v4/pkg/strvals"
 	appsv1 "k8s.io/api/apps/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
@@ -28,22 +23,7 @@ const (
 
 func renderZtunnelSpire(t *testing.T, overrides ...string) (map[string]string, error) {
 	t.Helper()
-	chart, err := loader.Load("cilium")
-	require.NoError(t, err)
-	values := map[string]any{}
-	for _, override := range overrides {
-		require.NoError(t, strvals.ParseInto(override, values))
-	}
-	renderValues, err := chartutil.ToRenderValues(chart, values, common.ReleaseOptions{
-		Name:      "cilium",
-		Namespace: "kube-system",
-		IsInstall: true,
-	}, nil)
-	if err != nil {
-		return nil, err
-	}
-	renderer := engine.Engine{}
-	return renderer.RenderWithContext(t.Context(), chart, renderValues)
+	return renderSpireChart(t, spireRenderOptions{}, overrides...)
 }
 
 func TestZtunnelSpireCRDRendering(t *testing.T) {

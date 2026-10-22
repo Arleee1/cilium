@@ -132,12 +132,16 @@
      - SPIRE agent tolerations configuration By default it follows the same tolerations as the agent itself to allow the Cilium agent on this node to connect to SPIRE. ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
      - list
      - ``[{"effect":"NoSchedule","key":"node.kubernetes.io/not-ready"},{"effect":"NoSchedule","key":"node-role.kubernetes.io/master"},{"effect":"NoSchedule","key":"node-role.kubernetes.io/control-plane"},{"effect":"NoSchedule","key":"node.cloudprovider.kubernetes.io/uninitialized","value":"true"},{"key":"CriticalAddonsOnly","operator":"Exists"}]``
+   * - :spelling:ignore:`authentication.mutual.spire.install.crds`
+     - Bundled ClusterStaticEntry CRD installation. By default this follows encryption.ztunnel.spire.useCRD, including with external SPIRE. Set enabled=false to opt out for an externally managed CRD, or enabled=true to explicitly install the schema. Helm skips existing CRDs without adopting or updating them and does not upgrade or delete CRDs. Existing releases must preinstall the CRD before enabling CRD mode. Omit enabled so Helm can use its fallback dependency condition.
+     - object
+     - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.enabled`
      - Enable SPIRE installation. This will only take effect only if authentication.mutual.spire.enabled is true
      - bool
      - ``true``
    * - :spelling:ignore:`authentication.mutual.spire.install.existingNamespace`
-     - SPIRE namespace already exists. Set to true if Helm should not create, manage, and import the SPIRE namespace.
+     - SPIRE namespace already exists. Set to true if Helm should not create, manage, and import the SPIRE namespace. A chart-managed namespace is retained when an upstream root Secret is selected, including the automatic shared root, so uninstall does not indirectly delete it.
      - bool
      - ``false``
    * - :spelling:ignore:`authentication.mutual.spire.install.initImage`
@@ -149,7 +153,7 @@
      - string
      - ``"cilium-spire"``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.affinity`
-     - SPIRE server affinity configuration
+     - SPIRE server affinity configuration. With multiple replicas and no explicit affinity, require separate nodes using kubernetes.io/hostname. Overriding this may remove protection against a node failure.
      - object
      - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.annotations`
@@ -164,12 +168,24 @@
      - SPIRE CA Subject
      - object
      - ``{"commonName":"Cilium SPIRE CA","country":"US","organization":"SPIRE"}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.ca.upstreamSecret`
+     - Override the existing upstream root Secret in the SPIRE namespace, containing a self-signed root CA certificate (tls.crt) and its private key (tls.key). Empty selects spire-upstream-ca for multiple servers or disposable CRD-managed storage; a persistent single server keeps its own CA unless this override is set. Pin the existing shared root name when scaling back to one persistent server. The chart only mounts this Secret; it never generates, reads, rotates or deletes CA material. Changing roots requires a planned migration.
+     - string
+     - ``""``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.controllerManager.image`
+     - SPIRE controller-manager image. Keep the bundled CRD compatible when overriding this image.
+     - object
+     - ``{"digest":"sha256:b04ddb8e9b89298cc0105f1939fb5b1e4f1ae87e2da20604e5990659e96c717b","override":null,"pullPolicy":"Always","repository":"ghcr.io/spiffe/spire-controller-manager","tag":"0.6.2","useDigest":true}``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.controllerManager.resources`
+     - SPIRE controller-manager container resource limits and requests.
+     - object
+     - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.dataStorage.accessMode`
      - Access mode of the SPIRE server data storage
      - string
      - ``"ReadWriteOnce"``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.dataStorage.enabled`
-     - Enable SPIRE server data storage
+     - Enable a separate PVC for every SPIRE server, including multiple replicas. These independent SQLite stores do not replicate SQL. Set false for advanced disposable storage. CRD mode then uses pod-local emptyDir storage and an existing shared root, even with one replica. Changing this setting requires StatefulSet recreation.
      - bool
      - ``true``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.dataStorage.size`
@@ -197,19 +213,23 @@
      - object
      - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.podSecurityContext`
-     - Security context to be added to spire server pods. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+     - Security context to be added to spire server pods. CRD-managed servers default to UID/GID/fsGroup 1000 and runAsNonRoot=true; legacy servers using an upstream root also default to fsGroup 1000. These values override those defaults. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
      - object
      - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.priorityClassName`
      - The priority class to use for the spire server
      - string
      - ``""``
+   * - :spelling:ignore:`authentication.mutual.spire.install.server.replicas`
+     - Number of SPIRE server/controller pairs, not database replicas. More than one requires encryption.ztunnel.spire.useCRD=true, a ClusterIP Service, and an existing shared root Secret. Each server uses its own PVC by default. The shared root defaults to the spire-upstream-ca Secret; ca.upstreamSecret overrides its name.
+     - int
+     - ``1``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.resources`
      - container resource limits & requests
      - object
      - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.securityContext`
-     - Security context to be added to spire server containers. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
+     - Security context to be added to spire server containers and the controller-manager, so both can access the private API socket. SecurityContext holds pod-level security attributes and common container settings. ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
      - object
      - ``{}``
    * - :spelling:ignore:`authentication.mutual.spire.install.server.service.annotations`
@@ -1395,7 +1415,7 @@
    * - :spelling:ignore:`encryption.ztunnel`
      - ztunnel encryption configuration. ztunnel is Istio's purpose-built, per-node proxy for handling L4 traffic in ambient mesh mode. These settings only apply when encryption.type is set to "ztunnel".
      - object
-     - ``{"affinity":{},"annotations":{},"ca":{"type":"internal"},"caAddress":"https://localhost:15012","extraEnv":[],"extraVolumeMounts":[],"extraVolumes":[],"healthPort":15021,"image":{"digest":"sha256:884de5adde400e39f58e36c7a729f7690466ca4a8eb4c2a8daa9c1c025115b24","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/ztunnel","tag":"v1.0.0","useDigest":true},"minReadySeconds":0,"nodeSelector":{"kubernetes.io/os":"linux"},"podAnnotations":{},"podLabels":{},"priorityClassName":null,"readinessProbe":{"failureThreshold":3,"initialDelaySeconds":0,"periodSeconds":10},"resources":{"requests":{"cpu":"200m","memory":"512Mi"}},"secrets":{"bootstrapRootCert":null},"spire":{"useCRD":false},"terminationGracePeriodSeconds":30,"tolerations":[{"effect":"NoSchedule","operator":"Exists"},{"key":"CriticalAddonsOnly","operator":"Exists"},{"effect":"NoExecute","operator":"Exists"}],"updateStrategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0},"type":"RollingUpdate"}}``
+     - ``{"affinity":{},"annotations":{},"ca":{"type":"internal"},"caAddress":"https://localhost:15012","extraEnv":[],"extraVolumeMounts":[],"extraVolumes":[],"healthPort":15021,"image":{"digest":"sha256:884de5adde400e39f58e36c7a729f7690466ca4a8eb4c2a8daa9c1c025115b24","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/ztunnel","tag":"v1.0.0","useDigest":true},"minReadySeconds":0,"nodeSelector":{"kubernetes.io/os":"linux"},"podAnnotations":{},"podLabels":{},"priorityClassName":null,"readinessProbe":{"failureThreshold":3,"initialDelaySeconds":0,"periodSeconds":10},"resources":{"requests":{"cpu":"200m","memory":"512Mi"}},"secrets":{"bootstrapRootCert":null},"spire":{"containerRuntimeSocketPath":"/run/containerd/containerd.sock","useCRD":false},"terminationGracePeriodSeconds":30,"tolerations":[{"effect":"NoSchedule","operator":"Exists"},{"key":"CriticalAddonsOnly","operator":"Exists"},{"effect":"NoExecute","operator":"Exists"}],"updateStrategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0},"type":"RollingUpdate"}}``
    * - :spelling:ignore:`encryption.ztunnel.affinity`
      - Affinity for ztunnel pods.
      - object
@@ -1409,7 +1429,7 @@
      - object
      - ``{"type":"internal"}``
    * - :spelling:ignore:`encryption.ztunnel.ca.type`
-     - Type of CA. "spire" uses an external SPIRE server (the operator then manages SPIRE entries for enrolled namespaces). "internal" uses Cilium's built-in CA and skips the SPIRE enrollment reconciler.
+     - Type of CA. "spire" uses a chart-managed or external SPIRE server (the operator then manages SPIRE entries for enrolled namespaces). "internal" uses Cilium's built-in CA and skips the SPIRE enrollment reconciler.
      - string
      - ``"internal"``
    * - :spelling:ignore:`encryption.ztunnel.caAddress`
@@ -1472,8 +1492,12 @@
      - Base64-encoded bootstrap root certificate content. If not provided, the secret must be created manually before deploying. @schema type: [null, string] @schema
      - string
      - ``nil``
+   * - :spelling:ignore:`encryption.ztunnel.spire.containerRuntimeSocketPath`
+     - Node-local containerd CRI socket used by ztunnel for delegated PID attestation with chart-managed SPIRE. Mounted read-only into ztunnel; access to this socket still grants privileged container-runtime access. External SPIRE installations retain their own extraEnv/volume wiring.
+     - string
+     - ``"/run/containerd/containerd.sock"``
    * - :spelling:ignore:`encryption.ztunnel.spire.useCRD`
-     - Register ztunnel identities using ClusterStaticEntry resources instead of the SPIRE Entry API and grant the operator the required CRD permissions. Requires encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true. SPIRE may be chart-managed or external (authentication.mutual.spire.install.enabled=false). Install the ClusterStaticEntry CRD and SPIRE controller-manager separately. Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use this value instead. If RBAC or the operator ServiceAccount is managed externally, provide the equivalent ClusterStaticEntry permissions outside this chart.
+     - Register ztunnel identities using ClusterStaticEntry resources instead of the SPIRE Entry API and grant the operator the required CRD permissions. Requires encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true. SPIRE may be chart-managed or external (authentication.mutual.spire.install.enabled=false). Chart-managed SPIRE includes a controller-manager and bootstrap entries. The bundled ClusterStaticEntry CRD is installed automatically on a new release unless authentication.mutual.spire.install.crds.enabled=false. Existing releases must preinstall the CRD before upgrading. External SPIRE requires its own controller; set install.crds.enabled=false when its CRD installation is also managed externally. Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use this value instead. If RBAC or the operator ServiceAccount is managed externally, provide the equivalent ClusterStaticEntry permissions outside this chart.
      - bool
      - ``false``
    * - :spelling:ignore:`encryption.ztunnel.terminationGracePeriodSeconds`

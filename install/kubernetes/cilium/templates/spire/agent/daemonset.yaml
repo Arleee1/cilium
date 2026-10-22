@@ -28,6 +28,10 @@ spec:
   template:
     metadata:
       namespace: {{ .Values.authentication.mutual.spire.install.namespace }}
+      {{- if and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") }}
+      annotations:
+        checksum/spire-agent-config: {{ include (print $.Template.BasePath "/spire/agent/configmap.yaml") . | sha256sum }}
+      {{- end }}
       labels:
         app: spire-agent
         {{- with .Values.commonLabels }}
@@ -79,8 +83,13 @@ spec:
             - name: spire-bundle
               mountPath: /run/spire/bundle
             - name: spire-agent-socket
-              mountPath: /run/spire/sockets
+              mountPath: {{ dir .Values.authentication.mutual.spire.adminSocketPath }}
               readOnly: false
+            {{- if not (hasPrefix (printf "%s/" (dir .Values.authentication.mutual.spire.adminSocketPath)) .Values.authentication.mutual.spire.agentSocketPath) }}
+            - name: spire-workload-socket
+              mountPath: {{ dir .Values.authentication.mutual.spire.agentSocketPath }}
+              readOnly: false
+            {{- end }}
             - name: spire-agent
               mountPath: /var/run/secrets/tokens
           env:
@@ -132,8 +141,14 @@ spec:
             name: spire-bundle
         - name: spire-agent-socket
           hostPath:
-            path: /run/spire/sockets
+            path: {{ dir .Values.authentication.mutual.spire.adminSocketPath }}
             type: DirectoryOrCreate
+        {{- if not (hasPrefix (printf "%s/" (dir .Values.authentication.mutual.spire.adminSocketPath)) .Values.authentication.mutual.spire.agentSocketPath) }}
+        - name: spire-workload-socket
+          hostPath:
+            path: {{ dir .Values.authentication.mutual.spire.agentSocketPath }}
+            type: DirectoryOrCreate
+        {{- end }}
         - name: spire-agent
           projected:
             sources:

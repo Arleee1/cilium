@@ -27,4 +27,12 @@ rules:
 - apiGroups: [ "" ]
   resources: [ "nodes","nodes/proxy" ]
   verbs: [ "get" ]
+{{- if .Values.encryption.ztunnel.spire.useCRD }}
+- apiGroups: [ "spire.spiffe.io" ]
+  resources: [ "clusterstaticentries" ]
+  verbs: [ "get", "list", "watch" ]
+- apiGroups: [ "spire.spiffe.io" ]
+  resources: [ "clusterstaticentries/status" ]
+  verbs: [ "get", "patch", "update" ]
+{{- end }}
 {{- end }}
