@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: spire-bundle
+  name: {{ include "cilium.spire.bundleName" . }}
   namespace: {{ .Values.authentication.mutual.spire.install.namespace }}
   {{- with .Values.commonLabels }}
   labels:

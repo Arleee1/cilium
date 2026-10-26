@@ -28,6 +28,11 @@ spec:
   template:
     metadata:
       namespace: {{ .Values.authentication.mutual.spire.install.namespace }}
+      {{- if and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") }}
+      annotations:
+        # spire-agent reads delegated identity authorization only at startup.
+        cilium.io/spire-agent-configmap-checksum: {{ include (print $.Template.BasePath "/spire/agent/configmap.yaml") . | sha256sum | quote }}
+      {{- end }}
       labels:
         app: spire-agent
         {{- with .Values.commonLabels }}
@@ -129,7 +134,7 @@ spec:
             name: spire-agent
         - name: spire-bundle
           configMap:
-            name: spire-bundle
+            name: {{ include "cilium.spire.bundleName" . }}
         - name: spire-agent-socket
           hostPath:
             path: /run/spire/sockets

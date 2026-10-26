@@ -1207,6 +1207,49 @@ encryption:
       # then manages SPIRE entries for enrolled namespaces). "internal" uses
       # Cilium's built-in CA and skips the SPIRE enrollment reconciler.
       type: internal
+    spire:
+      # -- Register ztunnel workload identities with an operator-managed ClusterSPIFFEID that a
+      # spire-controller-manager sidecar of each chart-managed SPIRE server
+      # reconciles, instead of the operator writing entries through the SPIRE
+      # Entry API. Pods in namespaces labeled `io.cilium/mtls-enabled=true` get
+      # the SPIFFE ID `spiffe://<trust domain>/ns/<namespace>/sa/<service account>`,
+      # and the agent advertises `authentication.mutual.spire.trustDomain` to ztunnel.
+      # The sidecar also reconciles ClusterStaticEntries for the SPIRE agent,
+      # cilium-agent, cilium-operator and ztunnel, which replace the cilium-init
+      # container of the SPIRE server.
+      # The elected Cilium operator creates or updates these five resources once
+      # at leader startup; Helm only supplies configuration and permissions.
+      # Registration configuration changes restart the operator even with
+      # `operator.rollOutPods=false`.
+      # Accidental deletion or manual drift is repaired only at the next
+      # operator or leader startup, not periodically.
+      # Resources are retained when the operator stops or CRD mode is disabled.
+      # SPIRE agents authorize the ztunnel delegate in both registration modes
+      # and restart when their startup-loaded configuration changes.
+      # CRD servers use the fixed spire-server-crd StatefulSet and fresh PVCs;
+      # the client-facing Service remains spire-server. Enabling useCRD on an
+      # existing installation requires the deliberate migration procedure in
+      # the ztunnel encryption guide, not an ordinary Helm replacement.
+      # Cilium agent Pods also restart when useCRD is enabled or disabled, or
+      # the SPIFFE trust domain changes, even with `rollOutCiliumPods=false`.
+      # In CRD mode, SPIRE server Pods restart when their server or
+      # controller-manager configuration changes.
+      # Requires `encryption.enabled=true`, `encryption.type=ztunnel`,
+      # `encryption.ztunnel.ca.type=spire`, `authentication.mutual.spire.enabled=true`,
+      # `authentication.mutual.spire.install.enabled=true`, `operator.enabled=true` and the
+      # spire.spiffe.io/v1alpha1 ClusterSPIFFEID and ClusterStaticEntry CRDs.
+      useCRD: false
+      # -- spire-controller-manager class name of the operator-managed ztunnel
+      # ClusterSPIFFEID and SPIRE ClusterStaticEntries. The chart-managed controller-manager
+      # only reconciles resources of this class, or only those without a class
+      # when empty.
+      className: cilium-spire
+      # -- Set to `true` and helm will not check for the spire.spiffe.io/v1alpha1
+      # ClusterSPIFFEID and ClusterStaticEntry CRDs before deploying, for
+      # example when rendering without access to the cluster. It does not
+      # install them: the operator retries registration within a bounded startup
+      # window and fails startup if either CRD remains unavailable.
+      trustCRDsExist: false
     # -- ztunnel container image.
     image:
       # @schema
@@ -4459,7 +4502,8 @@ authentication:
         namespace: cilium-spire
         # -- SPIRE namespace already exists. Set to true if Helm should not create, manage, and import the SPIRE namespace.
         existingNamespace: false
-        # -- init container image of SPIRE agent and server
+        # -- init container image of SPIRE agent and server. The SPIRE server
+        # does not use it with encryption.ztunnel.spire.useCRD=true.
         initImage:
           # @schema
           # type: [null, string]
@@ -4553,6 +4597,24 @@ authentication:
           # SPIRE server service configuration
           # -- container resource limits & requests
           resources: {}
+          # spire-controller-manager sidecar added to each SPIRE server when
+          # encryption.ztunnel.spire.useCRD=true. It reconciles the ztunnel
+          # ClusterSPIFFEID and the SPIRE ClusterStaticEntries into its
+          # pod-local server.
+          controllerManager:
+            # -- SPIRE controller-manager image
+            image:
+              # @schema
+              # type: [null, string]
+              # @schema
+              override: ~
+              repository: "ghcr.io/spiffe/spire-controller-manager"
+              tag: "0.6.2"
+              digest: "sha256:b04ddb8e9b89298cc0105f1939fb5b1e4f1ae87e2da20604e5990659e96c717b"
+              useDigest: true
+              pullPolicy: "Always"
+            # -- SPIRE controller-manager container resource limits & requests
+            resources: {}
           service:
             # -- Service type for the SPIRE server service
             type: ClusterIP
@@ -4582,6 +4644,8 @@ authentication:
             # -- StorageClass of the SPIRE server data storage
             storageClass: null
           # -- Security context to be added to spire server pods.
+          # With encryption.ztunnel.spire.useCRD=true it defaults to runAsUser,
+          # runAsGroup and fsGroup 1000.
           # SecurityContext holds pod-level security attributes and common container settings.
           # ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
           podSecurityContext: {}

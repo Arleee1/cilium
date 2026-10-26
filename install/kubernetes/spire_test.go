@@ -1,0 +1,1144 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of Cilium
+
+package kubernetes_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"reflect"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+	"text/template"
+
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/hivetest"
+	"github.com/spf13/pflag"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v4/pkg/chart/common"
+	chartutil "helm.sh/helm/v4/pkg/chart/common/util"
+	"helm.sh/helm/v4/pkg/chart/v2/loader"
+	"helm.sh/helm/v4/pkg/engine"
+	"helm.sh/helm/v4/pkg/strvals"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	crdvalidation "k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
+	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/yaml"
+
+	ztunnelconfig "github.com/cilium/cilium/operator/pkg/ztunnel/config"
+	operatorspire "github.com/cilium/cilium/operator/pkg/ztunnel/spire"
+	"github.com/cilium/cilium/pkg/hive"
+	k8sclient "github.com/cilium/cilium/pkg/k8s/client"
+	k8sTest "github.com/cilium/cilium/pkg/k8s/client/testutils"
+)
+
+const (
+	ztunnelSpireValues    = "encryption.enabled=true,encryption.type=ztunnel,encryption.ztunnel.ca.type=spire,authentication.mutual.spire.enabled=true,authentication.mutual.spire.install.enabled=true"
+	spireCRD              = "encryption.ztunnel.spire.useCRD=true"
+	clusterSPIFFEIDAPI    = "spire.spiffe.io/v1alpha1/ClusterSPIFFEID"
+	clusterStaticEntryAPI = "spire.spiffe.io/v1alpha1/ClusterStaticEntry"
+	// clusterSPIFFEIDCRD and clusterStaticEntryCRD are the spire-controller-manager
+	// v0.6.2 CRDs that users install before enabling useCRD.
+	clusterSPIFFEIDCRD    = "testdata/spire.spiffe.io_clusterspiffeids.yaml"
+	clusterStaticEntryCRD = "testdata/spire.spiffe.io_clusterstaticentries.yaml"
+	spireServerPath       = "cilium/templates/spire/server/"
+	spireCSEPath          = spireServerPath + "clusterstaticentries.yaml"
+	ztunnelCSIDPath       = "cilium/templates/ztunnel/clusterspiffeid.yaml"
+	spireIDTemplate       = "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+)
+
+// spireAPIs are the spire-controller-manager APIs that useCRD requires.
+var spireAPIs = []string{clusterSPIFFEIDAPI, clusterStaticEntryAPI}
+
+// renderSpireChart renders the cilium chart as helm install does, with the
+// given values and overrides, on a cluster that also serves apiVersions.
+func renderSpireChart(t *testing.T, values map[string]any, apiVersions []string, overrides ...string) (map[string]string, error) {
+	t.Helper()
+	chart, err := loader.Load("cilium")
+	require.NoError(t, err)
+	if values == nil {
+		values = map[string]any{}
+	}
+	for _, override := range overrides {
+		require.NoError(t, strvals.ParseInto(override, values))
+	}
+	caps := common.DefaultCapabilities.Copy()
+	caps.APIVersions = append(caps.APIVersions, apiVersions...)
+	renderValues, err := chartutil.ToRenderValuesWithSchemaValidation(chart, values,
+		common.ReleaseOptions{Name: "cilium", Namespace: "kube-system", IsInstall: true}, caps, false)
+	if err != nil {
+		return nil, err
+	}
+	var renderer engine.Engine
+	return renderer.RenderWithContext(t.Context(), chart, renderValues)
+}
+
+// renderSpire renders the cilium chart on a cluster that serves ClusterSPIFFEIDs
+// and ClusterStaticEntries.
+func renderSpire(t *testing.T, overrides ...string) map[string]string {
+	t.Helper()
+	rendered, err := renderSpireChart(t, nil, spireAPIs, overrides...)
+	require.NoError(t, err)
+	return rendered
+}
+
+func spireManifest[T any](t *testing.T, rendered map[string]string, path string) T {
+	t.Helper()
+	require.NotEmpty(t, strings.TrimSpace(rendered[path]), path)
+	var resource T
+	require.NoError(t, yaml.UnmarshalStrict([]byte(rendered[path]), &resource), path)
+	return resource
+}
+
+func spireContainer(t *testing.T, pod corev1.PodSpec, name string) corev1.Container {
+	t.Helper()
+	for _, container := range pod.Containers {
+		if container.Name == name {
+			return container
+		}
+	}
+	t.Fatalf("container %s not found", name)
+	return corev1.Container{}
+}
+
+func spireContainerNames(pod corev1.PodSpec) []string {
+	names := make([]string, 0, len(pod.Containers))
+	for _, container := range pod.Containers {
+		names = append(names, container.Name)
+	}
+	return names
+}
+
+func spireVolume(t *testing.T, pod corev1.PodSpec, name string) corev1.Volume {
+	t.Helper()
+	for _, volume := range pod.Volumes {
+		if volume.Name == name {
+			return volume
+		}
+	}
+	t.Fatalf("volume %s not found", name)
+	return corev1.Volume{}
+}
+
+func spireDocuments(t *testing.T, manifest string) []*unstructured.Unstructured {
+	t.Helper()
+	var documents []*unstructured.Unstructured
+	decoder := k8syaml.NewYAMLOrJSONDecoder(strings.NewReader(manifest), 4096)
+	for {
+		document := &unstructured.Unstructured{}
+		err := decoder.Decode(&document.Object)
+		if errors.Is(err, io.EOF) {
+			return documents
+		}
+		require.NoError(t, err)
+		if len(document.Object) > 0 {
+			documents = append(documents, document)
+		}
+	}
+}
+
+// spireObjects returns the rendered chart objects of the given kinds, keyed by
+// kind, namespace and name.
+func spireObjects(t *testing.T, rendered map[string]string, kinds ...string) map[string]*unstructured.Unstructured {
+	t.Helper()
+	objects := map[string]*unstructured.Unstructured{}
+	for path, manifest := range rendered {
+		if !strings.HasPrefix(path, "cilium/templates/") || !strings.HasSuffix(path, ".yaml") {
+			continue
+		}
+		for _, object := range spireDocuments(t, manifest) {
+			if !slices.Contains(kinds, object.GetKind()) {
+				continue
+			}
+			key := object.GetKind() + "/" + object.GetNamespace() + "/" + object.GetName()
+			require.NotContains(t, objects, key, path)
+			objects[key] = object
+		}
+	}
+	return objects
+}
+
+// operatorSpireResources runs the operator's actual registration cell with the
+// chart's arguments, without a SPIRE server or an agent socket.
+func operatorSpireResources(t *testing.T, rendered map[string]string) map[string][]*unstructured.Unstructured {
+	t.Helper()
+	require.Empty(t, spireObjects(t, rendered, "ClusterSPIFFEID", "ClusterStaticEntry"), "Helm must not write operator-managed resources")
+	deployment := spireManifest[appsv1.Deployment](t, rendered, "cilium/templates/cilium-operator/deployment.yaml")
+	config := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/cilium-configmap.yaml")
+	log := hivetest.Logger(t)
+	client, cs := k8sTest.NewFakeClientset(log)
+	h := hive.New(
+		operatorspire.Cell,
+		cell.Config(ztunnelconfig.DefaultConfig),
+		cell.Provide(func() k8sclient.Clientset { return cs }),
+	)
+	flags := pflag.NewFlagSet("operator", pflag.ContinueOnError)
+	h.RegisterFlags(flags)
+	var args []string
+	for _, arg := range spireContainer(t, deployment.Spec.Template.Spec, "cilium-operator").Args {
+		if strings.HasPrefix(arg, "--mesh-auth-") || strings.HasPrefix(arg, "--enable-ztunnel-spiffeid-crd=") {
+			args = append(args, arg)
+		}
+	}
+	require.NoError(t, flags.Parse(args))
+	h.Viper().Set("enable-ztunnel", config.Data["enable-ztunnel"])
+	h.Viper().Set("ztunnel-ca-type", config.Data["ztunnel-ca-type"])
+	t.Cleanup(func() { require.NoError(t, h.Stop(log, context.Background())) })
+	require.NoError(t, h.Start(log, t.Context()))
+	require.Len(t, client.FakeDynamicClient.Actions(), 10, "all five resources must be read and created before startup completes")
+	require.NoError(t, h.Stop(log, t.Context()))
+	objects := map[string][]*unstructured.Unstructured{}
+	for _, action := range client.FakeDynamicClient.Actions() {
+		if create, ok := action.(k8stesting.CreateAction); ok {
+			desired := create.GetObject().(*unstructured.Unstructured)
+			object, err := client.Resource(action.GetResource()).Get(t.Context(), desired.GetName(), metav1.GetOptions{})
+			require.NoError(t, err)
+			objects[object.GetKind()] = append(objects[object.GetKind()], object)
+		}
+	}
+	return objects
+}
+
+// spireCRDValidator returns a validator for the schema of the
+// spire-controller-manager CRD in the given file.
+func spireCRDValidator(t *testing.T, path, name string) crdvalidation.SchemaValidator {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var crd apiextensionsv1.CustomResourceDefinition
+	require.NoError(t, yaml.UnmarshalStrict(data, &crd))
+	require.Equal(t, name, crd.Name)
+	require.Equal(t, apiextensionsv1.ClusterScoped, crd.Spec.Scope)
+	require.Len(t, crd.Spec.Versions, 1)
+	require.Equal(t, "v1alpha1", crd.Spec.Versions[0].Name)
+	require.NotNil(t, crd.Spec.Versions[0].Subresources.Status)
+	var internal apiextensions.JSONSchemaProps
+	require.NoError(t, apiextensionsv1.Convert_v1_JSONSchemaProps_To_apiextensions_JSONSchemaProps(crd.Spec.Versions[0].Schema.OpenAPIV3Schema, &internal, nil))
+	validator, _, err := crdvalidation.NewSchemaValidator(&internal)
+	require.NoError(t, err)
+	return validator
+}
+
+// requireUpstreamSpireServerRBAC asserts that the SPIRE server RBAC renders
+// exactly as on upstream main, including the fixed spire-server roleRefs and
+// the <account>-pod RoleBinding.
+func requireUpstreamSpireServerRBAC(t *testing.T, rendered map[string]string, account string, rbac, serviceAccount bool) {
+	t.Helper()
+	typeMeta := func(kind string) metav1.TypeMeta {
+		return metav1.TypeMeta{Kind: kind, APIVersion: "rbac.authorization.k8s.io/v1"}
+	}
+	subjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: account, Namespace: "cilium-spire"}}
+	if rbac && serviceAccount {
+		require.Equal(t, rbacv1.ClusterRole{
+			TypeMeta:   typeMeta("ClusterRole"),
+			ObjectMeta: metav1.ObjectMeta{Name: account},
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"authentication.k8s.io"}, Resources: []string{"tokenreviews"}, Verbs: []string{"create"}},
+				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}},
+				{APIGroups: []string{""}, Resources: []string{"nodes", "nodes/proxy"}, Verbs: []string{"get"}},
+			},
+		}, spireManifest[rbacv1.ClusterRole](t, rendered, spireServerPath+"clusterrole.yaml"))
+		require.Equal(t, rbacv1.ClusterRoleBinding{
+			TypeMeta:   typeMeta("ClusterRoleBinding"),
+			ObjectMeta: metav1.ObjectMeta{Name: account},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "spire-server"},
+			Subjects:   subjects,
+		}, spireManifest[rbacv1.ClusterRoleBinding](t, rendered, spireServerPath+"clusterrolebinding.yaml"))
+	} else {
+		require.Empty(t, strings.TrimSpace(rendered[spireServerPath+"clusterrole.yaml"]))
+		require.Empty(t, strings.TrimSpace(rendered[spireServerPath+"clusterrolebinding.yaml"]))
+	}
+	if serviceAccount {
+		require.Equal(t, rbacv1.Role{
+			TypeMeta:   typeMeta("Role"),
+			ObjectMeta: metav1.ObjectMeta{Name: account, Namespace: "cilium-spire"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"patch", "get", "list"}}},
+		}, spireManifest[rbacv1.Role](t, rendered, spireServerPath+"role.yaml"))
+	} else {
+		require.Empty(t, strings.TrimSpace(rendered[spireServerPath+"role.yaml"]))
+	}
+	var bindings []rbacv1.RoleBinding
+	for _, document := range spireDocuments(t, rendered[spireServerPath+"rolebinding.yaml"]) {
+		var binding rbacv1.RoleBinding
+		require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(document.Object, &binding))
+		bindings = append(bindings, binding)
+	}
+	require.Equal(t, []rbacv1.RoleBinding{
+		{
+			TypeMeta:   typeMeta("RoleBinding"),
+			ObjectMeta: metav1.ObjectMeta{Name: account, Namespace: "cilium-spire"},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "spire-server"},
+			Subjects:   subjects,
+		},
+		{
+			TypeMeta:   typeMeta("RoleBinding"),
+			ObjectMeta: metav1.ObjectMeta{Name: account + "-pod", Namespace: "cilium-spire"},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: account + "-pod"},
+			Subjects:   subjects,
+		},
+	}, bindings)
+}
+
+func requireSpireControllerManagerRBAC(t *testing.T, rendered map[string]string, account, namespace string) (rbacv1.ClusterRole, rbacv1.ClusterRoleBinding) {
+	t.Helper()
+	name := account + "-controller-manager"
+	role := spireManifest[rbacv1.ClusterRole](t, rendered, spireServerPath+"controller-manager-clusterrole.yaml")
+	require.Equal(t, name, role.Name)
+	require.Equal(t, []rbacv1.PolicyRule{
+		{APIGroups: []string{"spire.spiffe.io"}, Resources: []string{"clusterspiffeids", "clusterstaticentries"}, Verbs: []string{"get", "list", "watch"}},
+		{APIGroups: []string{"spire.spiffe.io"}, Resources: []string{"clusterspiffeids/status", "clusterstaticentries/status"}, Verbs: []string{"get", "patch", "update"}},
+		{APIGroups: []string{""}, Resources: []string{"pods", "nodes", "namespaces", "endpoints"}, Verbs: []string{"get", "list", "watch"}},
+	}, role.Rules)
+	binding := spireManifest[rbacv1.ClusterRoleBinding](t, rendered, spireServerPath+"controller-manager-clusterrolebinding.yaml")
+	require.Equal(t, name, binding.Name)
+	require.Equal(t, rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: name}, binding.RoleRef)
+	require.Equal(t, []rbacv1.Subject{{Kind: "ServiceAccount", Name: account, Namespace: namespace}}, binding.Subjects)
+	return role, binding
+}
+
+// TestSpireUseCRDDisabledKeepsUpstreamRendering checks that without useCRD the
+// chart retains legacy registration and omits the ztunnel trust domain.
+// Delegated API authorization is independent of registration ownership.
+func TestSpireUseCRDDisabledKeepsUpstreamRendering(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		values  []string
+		managed bool
+	}{
+		{name: "mutual authentication", values: []string{"authentication.mutual.spire.enabled=true"}, managed: true},
+		{name: "ztunnel with chart-managed SPIRE", values: []string{ztunnelSpireValues}, managed: true},
+		{name: "ztunnel with external SPIRE", values: []string{ztunnelSpireValues, "authentication.mutual.spire.install.enabled=false"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered := renderSpire(t, tt.values...)
+			for _, path := range []string{
+				ztunnelCSIDPath,
+				spireCSEPath,
+				spireServerPath + "controller-manager-configmap.yaml",
+				spireServerPath + "controller-manager-clusterrole.yaml",
+				spireServerPath + "controller-manager-clusterrolebinding.yaml",
+			} {
+				require.Empty(t, strings.TrimSpace(rendered[path]), path)
+			}
+			ciliumConf := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/cilium-configmap.yaml")
+			require.NotContains(t, ciliumConf.Data, "ztunnel-spiffe-trust-domain")
+			operator := spireManifest[appsv1.Deployment](t, rendered, "cilium/templates/cilium-operator/deployment.yaml")
+			require.NotContains(t, spireContainer(t, operator.Spec.Template.Spec, "cilium-operator").Args, "--enable-ztunnel-spiffeid-crd=true")
+			if !tt.managed {
+				require.Empty(t, strings.TrimSpace(rendered[spireServerPath+"statefulset.yaml"]))
+				return
+			}
+			sts := spireManifest[appsv1.StatefulSet](t, rendered, spireServerPath+"statefulset.yaml")
+			pod := sts.Spec.Template.Spec
+			require.Equal(t, int32(1), *sts.Spec.Replicas)
+			require.Equal(t, []string{"cilium-init", "spire-server"}, spireContainerNames(pod))
+			require.True(t, *pod.ShareProcessNamespace)
+			require.Nil(t, pod.SecurityContext)
+			require.Nil(t, pod.Affinity)
+			require.Equal(t, &corev1.HostPathVolumeSource{
+				Path: "/var/run/spire-server/sockets",
+				Type: ptr.To(corev1.HostPathDirectoryOrCreate),
+			}, spireVolume(t, pod, "spire-server-socket").HostPath)
+			require.NotContains(t, spireContainer(t, pod, "cilium-init").Command[2], "ztunnel")
+			serverConf := spireManifest[corev1.ConfigMap](t, rendered, spireServerPath+"configmap.yaml").Data["server.conf"]
+			require.NotContains(t, serverConf, "UpstreamAuthority")
+			agentConf := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/spire/agent/configmap.yaml").Data["agent.conf"]
+			if tt.name == "ztunnel with chart-managed SPIRE" {
+				require.Contains(t, agentConf, `"spiffe://spiffe.cilium/ztunnel"`)
+			} else {
+				require.NotContains(t, agentConf, "/ztunnel")
+			}
+			service := spireManifest[corev1.Service](t, rendered, spireServerPath+"service.yaml")
+			require.Empty(t, service.Spec.SessionAffinity)
+		})
+	}
+}
+
+// TestSpireClusterSPIFFEID checks the ClusterSPIFFEID that registers enrolled
+// workloads, the controller-manager configuration that reconciles it, and the
+// ztunnel delegate authorization, with custom names everywhere.
+func TestSpireClusterSPIFFEID(t *testing.T) {
+	rendered := renderSpire(t, ztunnelSpireValues, spireCRD,
+		"cluster.name=lab-test,namespaceOverride=network-system,authentication.mutual.spire.trustDomain=workload.test",
+		"authentication.mutual.spire.install.namespace=identity-system,authentication.mutual.spire.install.existingNamespace=true",
+		"serviceAccounts.ztunnel.name=ztunnel-custom,authentication.mutual.spire.install.server.serviceAccount.name=server-custom",
+		"commonLabels.team=networking,authentication.mutual.spire.annotations.owner=platform")
+
+	workloads := operatorSpireResources(t, rendered)["ClusterSPIFFEID"]
+	require.Len(t, workloads, 1)
+	csid := workloads[0]
+	require.Equal(t, "spire.spiffe.io/v1alpha1", csid.GetAPIVersion())
+	require.Equal(t, "ClusterSPIFFEID", csid.GetKind())
+	require.Equal(t, "cilium-spire-network-system-cilium-ztunnel-workloads", csid.GetName())
+	require.Empty(t, csid.GetNamespace())
+	require.Equal(t, map[string]string{"team": "networking", "app.kubernetes.io/managed-by": "cilium-operator"}, csid.GetLabels())
+	require.Equal(t, map[string]string{"owner": "platform"}, csid.GetAnnotations())
+	require.Equal(t, map[string]any{
+		"className":         "cilium-spire",
+		"namespaceSelector": map[string]any{"matchLabels": map[string]any{"io.cilium/mtls-enabled": "true"}},
+		"spiffeIDTemplate":  spireIDTemplate,
+	}, csid.Object["spec"])
+	validator := spireCRDValidator(t, clusterSPIFFEIDCRD, "clusterspiffeids.spire.spiffe.io")
+	require.Empty(t, crdvalidation.ValidateCustomResource(field.NewPath("clusterSPIFFEID"), csid.Object, validator))
+	invalid := csid.DeepCopy()
+	require.NoError(t, unstructured.SetNestedField(invalid.Object, true, "spec", "spiffeIDTemplate"))
+	require.NotEmpty(t, crdvalidation.ValidateCustomResource(field.NewPath("clusterSPIFFEID"), invalid.Object, validator))
+	unstructured.RemoveNestedField(invalid.Object, "spec", "spiffeIDTemplate")
+	require.NotEmpty(t, crdvalidation.ValidateCustomResource(field.NewPath("clusterSPIFFEID"), invalid.Object, validator))
+
+	// spire-controller-manager renders the template with this data, and ztunnel
+	// only accepts the SPIFFE ID of the pod's ServiceAccount.
+	parsed, err := template.New("spiffeIDTemplate").Parse(spireIDTemplate)
+	require.NoError(t, err)
+	var workloadID strings.Builder
+	require.NoError(t, parsed.Execute(&workloadID, struct {
+		TrustDomain string
+		PodMeta     *metav1.ObjectMeta
+		PodSpec     *corev1.PodSpec
+	}{"workload.test", &metav1.ObjectMeta{Namespace: "shop"}, &corev1.PodSpec{ServiceAccountName: "checkout"}}))
+	require.Equal(t, "spiffe://workload.test/ns/shop/sa/checkout", workloadID.String())
+
+	cm := spireManifest[corev1.ConfigMap](t, rendered, spireServerPath+"controller-manager-configmap.yaml")
+	require.Equal(t, "identity-system", cm.Namespace)
+	var cfg map[string]any
+	require.NoError(t, yaml.UnmarshalStrict([]byte(cm.Data["controller-manager.yaml"]), &cfg))
+	require.Equal(t, map[string]any{
+		"apiVersion":            "spire.spiffe.io/v1alpha1",
+		"kind":                  "ControllerManagerConfig",
+		"metrics":               map[string]any{"bindAddress": "0"},
+		"health":                map[string]any{"healthProbeBindAddress": "0.0.0.0:8082"},
+		"leaderElection":        map[string]any{"leaderElect": false},
+		"clusterName":           "lab-test",
+		"trustDomain":           "workload.test",
+		"spireServerSocketPath": "/tmp/spire-server/private/api.sock",
+		"className":             "cilium-spire",
+		"watchClassless":        false,
+		"entryIDPrefix":         "cilium",
+		"ignoreNamespaces":      []any{},
+		"reconcile":             map[string]any{"clusterSPIFFEIDs": true, "clusterStaticEntries": true, "clusterFederatedTrustDomains": false},
+		"logLevel":              "info",
+	}, cfg)
+	// The controller-manager derives each entry's parent ID from the cluster
+	// name, so it must match the cluster of the k8s_psat node attestor.
+	serverConf := spireManifest[corev1.ConfigMap](t, rendered, spireServerPath+"configmap.yaml").Data["server.conf"]
+	require.Contains(t, serverConf, `"lab-test" = {`)
+	require.Contains(t, serverConf, `trust_domain = "workload.test"`)
+
+	sts := spireManifest[appsv1.StatefulSet](t, rendered, spireServerPath+"statefulset.yaml")
+	require.Equal(t, "identity-system", sts.Namespace)
+	require.Equal(t, "server-custom", sts.Spec.Template.Spec.ServiceAccountName)
+	ztunnel := spireManifest[appsv1.DaemonSet](t, rendered, "cilium/templates/ztunnel/daemonset.yaml")
+	require.Equal(t, "network-system", ztunnel.Namespace)
+	require.Equal(t, "ztunnel-custom", ztunnel.Spec.Template.Spec.ServiceAccountName)
+	agentConf := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/spire/agent/configmap.yaml").Data["agent.conf"]
+	require.Contains(t, agentConf, `"spiffe://workload.test/cilium-agent",`)
+	require.Contains(t, agentConf, `"spiffe://workload.test/ztunnel",`)
+
+	ciliumConf := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/cilium-configmap.yaml")
+	require.Equal(t, "workload.test", ciliumConf.Data["mesh-auth-spiffe-trust-domain"])
+	require.Equal(t, "workload.test", ciliumConf.Data["ztunnel-spiffe-trust-domain"])
+	operator := spireManifest[appsv1.Deployment](t, rendered, "cilium/templates/cilium-operator/deployment.yaml")
+	require.Contains(t, spireContainer(t, operator.Spec.Template.Spec, "cilium-operator").Args, "--enable-ztunnel-spiffeid-crd=true")
+
+	controllerRole, controllerBinding := requireSpireControllerManagerRBAC(t, rendered, "server-custom", "identity-system")
+	for _, meta := range []metav1.ObjectMeta{controllerRole.ObjectMeta, controllerBinding.ObjectMeta} {
+		require.Equal(t, map[string]string{"team": "networking"}, meta.Labels)
+		require.Equal(t, map[string]string{"owner": "platform"}, meta.Annotations)
+	}
+}
+
+// TestSpireClusterStaticEntries checks the ClusterStaticEntries that replace
+// cilium-init in CRD mode. They must register the SPIRE agent node alias and
+// the cilium-agent and cilium-operator entries as cilium-init does without
+// useCRD, plus the ztunnel delegate, for the workloads that the chart deploys,
+// and spire-controller-manager must accept them.
+func TestSpireClusterStaticEntries(t *testing.T) {
+	validator := spireCRDValidator(t, clusterStaticEntryCRD, "clusterstaticentries.spire.spiffe.io")
+	for _, tt := range []struct {
+		name                                     string
+		values                                   []string
+		trustDomain, spireNamespace, namespace   string
+		agentSA, ciliumSA, operatorSA, ztunnelSA string
+		labels, annotations                      map[string]any
+	}{
+		{
+			name:        "defaults",
+			trustDomain: "spiffe.cilium", spireNamespace: "cilium-spire", namespace: "kube-system",
+			agentSA: "spire-agent", ciliumSA: "cilium", operatorSA: "cilium-operator", ztunnelSA: "ztunnel-cilium",
+		},
+		{
+			name: "custom names",
+			values: []string{
+				"namespaceOverride=network-system,authentication.mutual.spire.trustDomain=workload.test",
+				"authentication.mutual.spire.install.namespace=identity-system,authentication.mutual.spire.install.existingNamespace=true",
+				"serviceAccounts.cilium.name=cilium-custom,serviceAccounts.operator.name=operator-custom,serviceAccounts.ztunnel.name=ztunnel-custom",
+				"commonLabels.team=networking,authentication.mutual.spire.annotations.owner=platform",
+			},
+			trustDomain: "workload.test", spireNamespace: "identity-system", namespace: "network-system",
+			agentSA: "spire-agent", ciliumSA: "cilium-custom", operatorSA: "operator-custom", ztunnelSA: "ztunnel-custom",
+			labels: map[string]any{"team": "networking"}, annotations: map[string]any{"owner": "platform"},
+		},
+		{
+			name:        "custom SPIRE agent ServiceAccount",
+			values:      []string{"authentication.mutual.spire.install.agent.serviceAccount.name=agent-custom"},
+			trustDomain: "spiffe.cilium", spireNamespace: "cilium-spire", namespace: "kube-system",
+			agentSA: "agent-custom", ciliumSA: "cilium", operatorSA: "cilium-operator", ztunnelSA: "ztunnel-cilium",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			agentID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", tt.trustDomain, tt.spireNamespace, tt.agentSA)
+			entry := func(name, spiffeID, parentID string, selectors ...any) map[string]any {
+				metadata := map[string]any{"name": "cilium-spire-" + tt.namespace + "-cilium-" + name}
+				labels := map[string]any{"app.kubernetes.io/managed-by": "cilium-operator"}
+				for key, value := range tt.labels {
+					labels[key] = value
+				}
+				metadata["labels"] = labels
+				if tt.annotations != nil {
+					metadata["annotations"] = tt.annotations
+				}
+				return map[string]any{
+					"apiVersion": "spire.spiffe.io/v1alpha1",
+					"kind":       "ClusterStaticEntry",
+					"metadata":   metadata,
+					"spec": map[string]any{
+						"className": "cilium-spire",
+						"spiffeID":  spiffeID,
+						"parentID":  parentID,
+						"selectors": selectors,
+					},
+				}
+			}
+			rendered := renderSpire(t, append([]string{ztunnelSpireValues, spireCRD}, tt.values...)...)
+			documents := operatorSpireResources(t, rendered)["ClusterStaticEntry"]
+			entries := make([]map[string]any, 0, len(documents))
+			for _, document := range documents {
+				entries = append(entries, document.Object)
+			}
+			require.Equal(t, []map[string]any{
+				entry("spire-agent", agentID, "spiffe://"+tt.trustDomain+"/spire/server",
+					"k8s_psat:agent_ns:"+tt.spireNamespace, "k8s_psat:agent_sa:"+tt.agentSA),
+				entry("cilium-agent", "spiffe://"+tt.trustDomain+"/cilium-agent", agentID,
+					"k8s:ns:"+tt.namespace, "k8s:sa:"+tt.ciliumSA),
+				entry("cilium-operator", "spiffe://"+tt.trustDomain+"/cilium-operator", agentID,
+					"k8s:ns:"+tt.namespace, "k8s:sa:"+tt.operatorSA),
+				entry("ztunnel", "spiffe://"+tt.trustDomain+"/ztunnel", agentID,
+					"k8s:ns:"+tt.namespace, "k8s:sa:"+tt.ztunnelSA),
+			}, entries)
+			require.Empty(t, spireObjects(t, rendered, "ClusterStaticEntry"))
+
+			// spire-controller-manager parses both IDs with go-spiffe and splits each
+			// selector into the attestor type and value at the first colon.
+			for _, document := range documents {
+				require.Empty(t, crdvalidation.ValidateCustomResource(field.NewPath(document.GetName()), document.Object, validator))
+				for _, key := range []string{"spiffeID", "parentID"} {
+					value, _, err := unstructured.NestedString(document.Object, "spec", key)
+					require.NoError(t, err)
+					id, err := spiffeid.FromString(value)
+					require.NoError(t, err, value)
+					require.Equal(t, tt.trustDomain, id.TrustDomain().Name(), value)
+				}
+				selectors, _, err := unstructured.NestedStringSlice(document.Object, "spec", "selectors")
+				require.NoError(t, err)
+				for _, selector := range selectors {
+					attestor, value, found := strings.Cut(selector, ":")
+					require.True(t, found, selector)
+					require.Contains(t, []string{"k8s", "k8s_psat"}, attestor, selector)
+					require.NotEmpty(t, value, selector)
+				}
+			}
+			invalid := documents[0].DeepCopy()
+			unstructured.RemoveNestedField(invalid.Object, "spec", "selectors")
+			require.NotEmpty(t, crdvalidation.ValidateCustomResource(field.NewPath("invalid"), invalid.Object, validator))
+			invalid = documents[0].DeepCopy()
+			require.NoError(t, unstructured.SetNestedField(invalid.Object, true, "spec", "spiffeID"))
+			require.NotEmpty(t, crdvalidation.ValidateCustomResource(field.NewPath("invalid"), invalid.Object, validator))
+
+			// The selectors must match the workloads that the chart deploys, and the
+			// SPIRE server must accept the node alias ServiceAccount.
+			for path, want := range map[string][2]string{
+				"cilium/templates/spire/agent/daemonset.yaml":  {tt.spireNamespace, tt.agentSA},
+				"cilium/templates/cilium-agent/daemonset.yaml": {tt.namespace, tt.ciliumSA},
+				"cilium/templates/ztunnel/daemonset.yaml":      {tt.namespace, tt.ztunnelSA},
+			} {
+				daemonSet := spireManifest[appsv1.DaemonSet](t, rendered, path)
+				require.Equal(t, want, [2]string{daemonSet.Namespace, daemonSet.Spec.Template.Spec.ServiceAccountName}, path)
+			}
+			operator := spireManifest[appsv1.Deployment](t, rendered, "cilium/templates/cilium-operator/deployment.yaml")
+			require.Equal(t, [2]string{tt.namespace, tt.operatorSA}, [2]string{operator.Namespace, operator.Spec.Template.Spec.ServiceAccountName})
+			serverConf := spireManifest[corev1.ConfigMap](t, rendered, spireServerPath+"configmap.yaml").Data["server.conf"]
+			require.Contains(t, serverConf, fmt.Sprintf(`service_account_allow_list = ["%s:%s"]`, tt.spireNamespace, tt.agentSA))
+			agentConf := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/spire/agent/configmap.yaml").Data["agent.conf"]
+			for _, delegate := range []string{"cilium-agent", "ztunnel"} {
+				require.Contains(t, agentConf, fmt.Sprintf(`"spiffe://%s/%s",`, tt.trustDomain, delegate))
+			}
+
+			// cilium-init hardcodes the spire-agent ServiceAccount, so it only
+			// registers the same entries when the SPIRE agent uses that one.
+			if tt.agentSA != "spire-agent" {
+				return
+			}
+			off := renderSpire(t, append([]string{ztunnelSpireValues}, tt.values...)...)
+			script := spireContainer(t, spireManifest[appsv1.StatefulSet](t, off, spireServerPath+"statefulset.yaml").Spec.Template.Spec, "cilium-init").Command[2]
+			variables := map[string]string{}
+			for line := range strings.SplitSeq(script, "\n") {
+				name, value, found := strings.Cut(line, "=")
+				if found && (strings.HasSuffix(name, "_SPIFFE_ID") || strings.HasSuffix(name, "_SELECTORS")) {
+					variables[name] = strings.Trim(value, `"`)
+				}
+			}
+			fromEntries := map[string]string{}
+			for i, prefix := range []string{"AGENT", "CILIUM_AGENT", "CILIUM_OPERATOR"} {
+				spec := entries[i]["spec"].(map[string]any)
+				var flags []string
+				for _, selector := range spec["selectors"].([]any) {
+					flags = append(flags, "-selector "+selector.(string))
+				}
+				fromEntries[prefix+"_SPIFFE_ID"] = spec["spiffeID"].(string)
+				fromEntries[prefix+"_SELECTORS"] = strings.Join(flags, " ")
+			}
+			require.Equal(t, fromEntries, variables)
+			// -node parents the alias to the SPIRE server, and the other entries are
+			// parented to the alias.
+			require.Equal(t, 3, strings.Count(script, " entry create "))
+			require.Contains(t, script, " entry create ${SOCKET_FLAG} -spiffeID $AGENT_SPIFFE_ID $AGENT_SELECTORS -node\n")
+			for _, prefix := range []string{"CILIUM_AGENT", "CILIUM_OPERATOR"} {
+				require.Contains(t, script, fmt.Sprintf(" entry create ${SOCKET_FLAG} -spiffeID $%s_SPIFFE_ID -parentID $AGENT_SPIFFE_ID $%s_SELECTORS\n", prefix, prefix))
+			}
+		})
+	}
+}
+
+func TestSpireOperatorRegistrationMetadata(t *testing.T) {
+	annotations := map[string]any{
+		"example.org/owner": "team, \"networking\"\nplatform=identity",
+	}
+	values := map[string]any{
+		"commonLabels": map[string]any{"team": "networking"},
+		"authentication": map[string]any{"mutual": map[string]any{"spire": map[string]any{
+			"annotations": annotations,
+		}}},
+	}
+	rendered, err := renderSpireChart(t, values, spireAPIs, ztunnelSpireValues, spireCRD)
+	require.NoError(t, err)
+	for _, resources := range operatorSpireResources(t, rendered) {
+		for _, object := range resources {
+			require.Equal(t, map[string]string{"team": "networking", "app.kubernetes.io/managed-by": "cilium-operator"}, object.GetLabels())
+			require.Equal(t, map[string]string{"example.org/owner": annotations["example.org/owner"].(string)}, object.GetAnnotations())
+		}
+	}
+}
+
+func TestSpireRegistrationChangesRestartOperator(t *testing.T) {
+	for _, rollout := range []bool{false, true} {
+		values := []string{ztunnelSpireValues, spireCRD, fmt.Sprintf("operator.rollOutPods=%t", rollout)}
+		before := spireManifest[appsv1.Deployment](t, renderSpire(t, values...), "cilium/templates/cilium-operator/deployment.yaml").Spec.Template
+		for _, override := range []string{
+			"authentication.mutual.spire.trustDomain=workload.test",
+			"encryption.ztunnel.spire.className=custom-class",
+			"encryption.ztunnel.spire.className=",
+			"authentication.mutual.spire.install.agent.serviceAccount.name=agent-custom",
+			"serviceAccounts.cilium.name=cilium-custom",
+			"serviceAccounts.operator.name=operator-custom",
+			"serviceAccounts.ztunnel.name=ztunnel-custom",
+			"commonLabels.team=networking",
+			"authentication.mutual.spire.annotations.owner=platform",
+		} {
+			t.Run(fmt.Sprintf("rollout=%t/%s", rollout, override), func(t *testing.T) {
+				after := spireManifest[appsv1.Deployment](t, renderSpire(t, append(slices.Clone(values), override)...), "cilium/templates/cilium-operator/deployment.yaml").Spec.Template
+				require.NotEqual(t, before, after, "registration configuration is read at operator startup")
+			})
+		}
+	}
+}
+
+// TestSpireClassName checks that the controller-manager reconciles only the
+// ClusterSPIFFEID and ClusterStaticEntries of its class, or only classless ones
+// without a class.
+func TestSpireClassName(t *testing.T) {
+	for _, className := range []string{"", "custom-class"} {
+		t.Run("className="+className, func(t *testing.T) {
+			rendered := renderSpire(t, ztunnelSpireValues, spireCRD, "encryption.ztunnel.spire.className="+className)
+			cm := spireManifest[corev1.ConfigMap](t, rendered, spireServerPath+"controller-manager-configmap.yaml")
+			var cfg map[string]any
+			require.NoError(t, yaml.UnmarshalStrict([]byte(cm.Data["controller-manager.yaml"]), &cfg))
+			want := map[string]any{"watchClassless": className == ""}
+			if className != "" {
+				want["className"] = className
+			}
+			got := map[string]any{}
+			for _, key := range []string{"className", "watchClassless"} {
+				if value, found := cfg[key]; found {
+					got[key] = value
+				}
+			}
+			require.Equal(t, want, got)
+
+			resources := operatorSpireResources(t, rendered)
+			workloads := resources["ClusterSPIFFEID"]
+			require.Len(t, workloads, 1)
+			entries := resources["ClusterStaticEntry"]
+			require.Len(t, entries, 4)
+			for _, object := range append(workloads, entries...) {
+				value, found, err := unstructured.NestedString(object.Object, "spec", "className")
+				require.NoError(t, err)
+				require.Equal(t, className != "", found, object.GetName())
+				require.Equal(t, className, value, object.GetName())
+			}
+		})
+	}
+}
+
+func TestSpireControllerManagerRestartsOnConfigChange(t *testing.T) {
+	const annotation = "cilium.io/spire-controller-manager-configmap-checksum"
+	checksum := func(t *testing.T, overrides ...string) (string, bool) {
+		t.Helper()
+		rendered := renderSpire(t, overrides...)
+		sts := spireManifest[appsv1.StatefulSet](t, rendered, spireServerPath+"statefulset.yaml")
+		sum, ok := sts.Spec.Template.Annotations[annotation]
+		if ok {
+			config := rendered[spireServerPath+"controller-manager-configmap.yaml"]
+			require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte(config))), sum)
+		}
+		return sum, ok
+	}
+
+	_, ok := checksum(t, ztunnelSpireValues)
+	require.False(t, ok)
+	sum, ok := checksum(t, ztunnelSpireValues, spireCRD)
+	require.True(t, ok)
+	require.NotEmpty(t, sum)
+	for _, tt := range []struct {
+		name, override string
+	}{
+		{"custom class", "encryption.ztunnel.spire.className=custom-class"},
+		{"classless", "encryption.ztunnel.spire.className="},
+		{"cluster name", "cluster.name=other-cluster"},
+		{"trust domain", "authentication.mutual.spire.trustDomain=example.org"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			other, ok := checksum(t, ztunnelSpireValues, spireCRD, tt.override)
+			require.True(t, ok)
+			require.NotEqual(t, sum, other)
+		})
+	}
+	unchanged, ok := checksum(t, ztunnelSpireValues, spireCRD,
+		"authentication.mutual.spire.install.server.controllerManager.resources.requests.cpu=150m")
+	require.True(t, ok)
+	require.Equal(t, sum, unchanged)
+}
+
+func TestSpireServerRestartsOnConfigChange(t *testing.T) {
+	const annotation = "cilium.io/spire-server-configmap-checksum"
+	off := renderSpire(t, ztunnelSpireValues)
+	require.NotContains(t, spireManifest[appsv1.StatefulSet](t, off, spireServerPath+"statefulset.yaml").Spec.Template.Annotations, annotation)
+	before := renderSpire(t, ztunnelSpireValues, spireCRD)
+	beforePod := spireManifest[appsv1.StatefulSet](t, before, spireServerPath+"statefulset.yaml").Spec.Template
+	beforeConfig := spireManifest[corev1.ConfigMap](t, before, spireServerPath+"configmap.yaml").Data["server.conf"]
+
+	for _, tt := range []struct {
+		name, override string
+	}{
+		{"agent ServiceAccount", "authentication.mutual.spire.install.agent.serviceAccount.name=agent-custom"},
+		{"CA key type", "authentication.mutual.spire.install.server.ca.keyType=ec-p256"},
+		{"CA subject", "authentication.mutual.spire.install.server.ca.subject.commonName=Custom SPIRE CA"},
+		{"cluster name", "cluster.name=other-cluster"},
+		{"trust domain", "authentication.mutual.spire.trustDomain=example.org"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			after := renderSpire(t, ztunnelSpireValues, spireCRD, tt.override)
+			afterPod := spireManifest[appsv1.StatefulSet](t, after, spireServerPath+"statefulset.yaml").Spec.Template
+			afterConfig := spireManifest[corev1.ConfigMap](t, after, spireServerPath+"configmap.yaml").Data["server.conf"]
+			require.NotEqual(t, beforeConfig, afterConfig)
+			require.False(t, reflect.DeepEqual(beforePod, afterPod), "server.conf changed without restarting the server")
+			require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte(after[spireServerPath+"configmap.yaml"]))), afterPod.Annotations[annotation])
+		})
+	}
+	require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte(before[spireServerPath+"configmap.yaml"]))), beforePod.Annotations[annotation])
+	unchanged := renderSpire(t, ztunnelSpireValues, spireCRD,
+		"encryption.ztunnel.spire.className=custom-class",
+		"authentication.mutual.spire.install.server.resources.requests.cpu=150m")
+	require.Equal(t, beforePod.Annotations[annotation], spireManifest[appsv1.StatefulSet](t, unchanged, spireServerPath+"statefulset.yaml").Spec.Template.Annotations[annotation])
+}
+
+func TestSpireCRDTrustDomainRestartsCilium(t *testing.T) {
+	const annotation = "cilium.io/ztunnel-spiffe-trust-domain"
+	const configKey = "ztunnel-spiffe-trust-domain"
+	for _, rollOut := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rollOutCiliumPods=%t", rollOut), func(t *testing.T) {
+			values := []string{ztunnelSpireValues, fmt.Sprintf("rollOutCiliumPods=%t", rollOut)}
+			off := renderSpire(t, values...)
+			on := renderSpire(t, append(slices.Clone(values), spireCRD)...)
+			custom := renderSpire(t, append(slices.Clone(values), spireCRD, "authentication.mutual.spire.trustDomain=example.org")...)
+			for _, tt := range []struct {
+				name          string
+				before, after map[string]string
+			}{
+				{"enable CRD", off, on},
+				{"change trust domain", on, custom},
+				{"disable CRD", on, off},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					beforeConfig := spireManifest[corev1.ConfigMap](t, tt.before, "cilium/templates/cilium-configmap.yaml")
+					afterConfig := spireManifest[corev1.ConfigMap](t, tt.after, "cilium/templates/cilium-configmap.yaml")
+					require.NotEqual(t, beforeConfig.Data[configKey], afterConfig.Data[configKey])
+					beforePod := spireManifest[appsv1.DaemonSet](t, tt.before, "cilium/templates/cilium-agent/daemonset.yaml").Spec.Template
+					afterPod := spireManifest[appsv1.DaemonSet](t, tt.after, "cilium/templates/cilium-agent/daemonset.yaml").Spec.Template
+					require.False(t, reflect.DeepEqual(beforePod, afterPod), "xDS trust domain changed without restarting Cilium")
+				})
+			}
+			require.NotContains(t, spireManifest[appsv1.DaemonSet](t, off, "cilium/templates/cilium-agent/daemonset.yaml").Spec.Template.Annotations, annotation)
+			for _, rendered := range []map[string]string{on, custom} {
+				config := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/cilium-configmap.yaml")
+				pod := spireManifest[appsv1.DaemonSet](t, rendered, "cilium/templates/cilium-agent/daemonset.yaml").Spec.Template
+				require.Equal(t, config.Data[configKey], pod.Annotations[annotation])
+			}
+			if !rollOut {
+				unrelated := renderSpire(t, append(slices.Clone(values), spireCRD,
+					"encryption.ztunnel.spire.className=custom-class")...)
+				require.Equal(t,
+					spireManifest[appsv1.DaemonSet](t, on, "cilium/templates/cilium-agent/daemonset.yaml").Spec.Template,
+					spireManifest[appsv1.DaemonSet](t, unrelated, "cilium/templates/cilium-agent/daemonset.yaml").Spec.Template)
+			}
+		})
+	}
+}
+
+func TestSpireControllerManagerNamespaceEnrollment(t *testing.T) {
+	rendered := renderSpire(t, ztunnelSpireValues, spireCRD)
+	cm := spireManifest[corev1.ConfigMap](t, rendered, spireServerPath+"controller-manager-configmap.yaml")
+	// Controller-manager v0.6.2 initializes these defaults before loading the file.
+	cfg := struct {
+		IgnoreNamespaces []string `json:"ignoreNamespaces"`
+	}{IgnoreNamespaces: []string{"kube-system", "kube-public", "spire-system"}}
+	require.NoError(t, yaml.Unmarshal([]byte(cm.Data["controller-manager.yaml"]), &cfg))
+	require.Equal(t, []string{}, cfg.IgnoreNamespaces)
+
+	var csid struct {
+		Spec struct {
+			NamespaceSelector metav1.LabelSelector `json:"namespaceSelector"`
+		} `json:"spec"`
+	}
+	require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(operatorSpireResources(t, rendered)["ClusterSPIFFEID"][0].Object, &csid))
+	selector, err := metav1.LabelSelectorAsSelector(&csid.Spec.NamespaceSelector)
+	require.NoError(t, err)
+
+	// Controller-manager treats ignoreNamespaces as regular expressions.
+	var ignoredNamespaces []*regexp.Regexp
+	for _, pattern := range cfg.IgnoreNamespaces {
+		expression, err := regexp.Compile(pattern)
+		require.NoError(t, err)
+		ignoredNamespaces = append(ignoredNamespaces, expression)
+	}
+	for _, namespace := range []string{
+		"kube-system",
+		"kube-public",
+		"spire-system",
+		"team-kube-system-app",
+		"kube-public-workloads",
+		"spire-system-tests",
+		"cilium-spire",
+		"applications",
+	} {
+		t.Run(namespace, func(t *testing.T) {
+			ignored := false
+			for _, expression := range ignoredNamespaces {
+				ignored = ignored || expression.MatchString(namespace)
+			}
+			require.False(t, ignored)
+			for _, tt := range []struct {
+				name     string
+				labels   labels.Set
+				enrolled bool
+			}{
+				{"enrolled", labels.Set{"io.cilium/mtls-enabled": "true"}, true},
+				{"disabled", labels.Set{"io.cilium/mtls-enabled": "false"}, false},
+				{"wrong case", labels.Set{"io.cilium/mtls-enabled": "True"}, false},
+				{"unlabeled", nil, false},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					require.Equal(t, tt.enrolled, selector.Matches(tt.labels) && !ignored)
+				})
+			}
+		})
+	}
+}
+
+// TestSpireControllerManagerSidecar checks the controller-manager sidecar, which
+// replaces cilium-init in CRD mode, and that the SPIRE server pod runs as the
+// user of the SPIRE server image by default, so that the sidecar runs as
+// non-root and reaches the server API socket as its owner.
+func TestSpireControllerManagerSidecar(t *testing.T) {
+	serverUser := &corev1.PodSecurityContext{RunAsUser: ptr.To[int64](1000), RunAsGroup: ptr.To[int64](1000), FSGroup: ptr.To[int64](1000)}
+	rendered := renderSpire(t, ztunnelSpireValues, spireCRD)
+	sts := spireManifest[appsv1.StatefulSet](t, rendered, spireServerPath+"statefulset.yaml")
+	pod := sts.Spec.Template.Spec
+	require.Equal(t, int32(1), *sts.Spec.Replicas)
+	require.Equal(t, []string{"spire-server", "spire-controller-manager"}, spireContainerNames(pod))
+	require.Nil(t, pod.ShareProcessNamespace)
+	require.Equal(t, serverUser, pod.SecurityContext)
+
+	server := spireContainer(t, pod, "spire-server")
+	require.Contains(t, server.VolumeMounts, corev1.VolumeMount{Name: "spire-server-socket", MountPath: "/tmp/spire-server/private"})
+	require.Equal(t, corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}, spireVolume(t, pod, "spire-server-socket").VolumeSource)
+	require.Equal(t, "spire-server-crd-controller-manager", spireVolume(t, pod, "spire-controller-config").ConfigMap.Name)
+	controller := spireContainer(t, pod, "spire-controller-manager")
+	require.Contains(t, controller.Image, "ghcr.io/spiffe/spire-controller-manager:0.6.2@sha256:")
+	require.Equal(t, []string{"-config", "/run/spire/controller-manager/controller-manager.yaml"}, controller.Args)
+	require.Equal(t, []corev1.EnvVar{{Name: "ENABLE_WEBHOOKS", Value: "false"}}, controller.Env)
+	require.Equal(t, []corev1.ContainerPort{{Name: "controller-http", ContainerPort: 8082}}, controller.Ports)
+	require.Equal(t, []corev1.VolumeMount{
+		{Name: "spire-controller-config", MountPath: "/run/spire/controller-manager", ReadOnly: true},
+		{Name: "spire-server-socket", MountPath: "/tmp/spire-server/private", ReadOnly: true},
+	}, controller.VolumeMounts)
+	port := intstr.FromString("controller-http")
+	require.Equal(t, &corev1.Probe{
+		ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: port}},
+		InitialDelaySeconds: 15,
+		PeriodSeconds:       10,
+	}, controller.LivenessProbe)
+	require.Equal(t, &corev1.Probe{
+		ProbeHandler:  corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: port}},
+		PeriodSeconds: 5,
+	}, controller.ReadinessProbe)
+	require.Nil(t, controller.SecurityContext)
+	require.Empty(t, controller.Resources)
+
+	rendered = renderSpire(t, ztunnelSpireValues, spireCRD,
+		"authentication.mutual.spire.install.server.podSecurityContext.fsGroup=2000,authentication.mutual.spire.install.server.podSecurityContext.runAsNonRoot=true",
+		"authentication.mutual.spire.install.server.securityContext.runAsUser=3000",
+		"authentication.mutual.spire.install.server.controllerManager.image.override=registry.example/controller:custom",
+		"authentication.mutual.spire.install.server.controllerManager.resources.requests.cpu=150m")
+	pod = spireManifest[appsv1.StatefulSet](t, rendered, spireServerPath+"statefulset.yaml").Spec.Template.Spec
+	require.Equal(t, &corev1.PodSecurityContext{
+		RunAsUser:    ptr.To[int64](1000),
+		RunAsGroup:   ptr.To[int64](1000),
+		FSGroup:      ptr.To[int64](2000),
+		RunAsNonRoot: ptr.To(true),
+	}, pod.SecurityContext)
+	for _, name := range []string{"spire-server", "spire-controller-manager"} {
+		require.Equal(t, &corev1.SecurityContext{RunAsUser: ptr.To[int64](3000)}, spireContainer(t, pod, name).SecurityContext, name)
+	}
+	controller = spireContainer(t, pod, "spire-controller-manager")
+	require.Equal(t, "registry.example/controller:custom", controller.Image)
+	require.Equal(t, "150m", controller.Resources.Requests.Cpu().String())
+
+	for _, useCRD := range []bool{false, true} {
+		rendered := renderSpire(t, ztunnelSpireValues, fmt.Sprintf("encryption.ztunnel.spire.useCRD=%t", useCRD),
+			"authentication.mutual.spire.install.server.podSecurityContext=null")
+		securityContext := spireManifest[appsv1.StatefulSet](t, rendered, spireServerPath+"statefulset.yaml").Spec.Template.Spec.SecurityContext
+		if useCRD {
+			require.Equal(t, serverUser, securityContext)
+		} else {
+			require.Nil(t, securityContext)
+		}
+	}
+}
+
+// TestSpireUseCRDRegistrationRBAC checks that toggling useCRD only adds the
+// operator's resource-writing rule and the sidecar's read/status permissions,
+// without changing existing bindings or granting the operator status access.
+func TestSpireUseCRDRegistrationRBAC(t *testing.T) {
+	kinds := []string{"ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding"}
+	for _, account := range []string{"spire-server", "server-custom"} {
+		for _, rbac := range []bool{false, true} {
+			for _, serviceAccount := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/rbac=%t/serviceAccount=%t", account, rbac, serviceAccount), func(t *testing.T) {
+					values := []string{
+						ztunnelSpireValues,
+						"authentication.mutual.spire.install.server.serviceAccount.name=" + account,
+						fmt.Sprintf("rbac.create=%t", rbac),
+						fmt.Sprintf("authentication.mutual.spire.install.server.serviceAccount.create=%t", serviceAccount),
+					}
+					off := renderSpire(t, values...)
+					requireUpstreamSpireServerRBAC(t, off, account, rbac, serviceAccount)
+					on := renderSpire(t, append(slices.Clone(values), spireCRD)...)
+					for _, name := range []string{"clusterrole.yaml", "clusterrolebinding.yaml", "role.yaml", "rolebinding.yaml"} {
+						require.Equal(t, off[spireServerPath+name], on[spireServerPath+name], name)
+					}
+					before, after := spireObjects(t, off, kinds...), spireObjects(t, on, kinds...)
+					for key, object := range before {
+						require.Contains(t, after, key)
+						if key == "ClusterRole//cilium-operator" {
+							afterRole := spireManifest[rbacv1.ClusterRole](t, on, "cilium/templates/cilium-operator/clusterrole.yaml")
+							require.Equal(t, rbacv1.PolicyRule{
+								APIGroups: []string{"spire.spiffe.io"},
+								Resources: []string{"clusterspiffeids", "clusterstaticentries"},
+								Verbs:     []string{"get", "create", "update"},
+							}, afterRole.Rules[0])
+							afterRole.Rules = afterRole.Rules[1:]
+							require.Equal(t, spireManifest[rbacv1.ClusterRole](t, off, "cilium/templates/cilium-operator/clusterrole.yaml"), afterRole)
+							continue
+						}
+						require.Equal(t, object.Object, after[key].Object, key)
+					}
+					var added []string
+					for key := range after {
+						if _, found := before[key]; !found {
+							added = append(added, key)
+						}
+					}
+					if rbac && serviceAccount {
+						name := account + "-controller-manager"
+						require.ElementsMatch(t, []string{"ClusterRole//" + name, "ClusterRoleBinding//" + name}, added)
+						requireSpireControllerManagerRBAC(t, on, account, "cilium-spire")
+					} else {
+						require.Empty(t, added)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestSpireAgentRestartsOnConfigChange checks that, with the SPIRE CA, the
+// spire-agent pods restart when their configuration changes, because
+// spire-agent reads it only at startup.
+func TestSpireAgentRestartsOnConfigChange(t *testing.T) {
+	const annotation = "cilium.io/spire-agent-configmap-checksum"
+	checksum := func(t *testing.T, overrides ...string) (string, bool) {
+		t.Helper()
+		ds := spireManifest[appsv1.DaemonSet](t, renderSpire(t, overrides...), "cilium/templates/spire/agent/daemonset.yaml")
+		sum, ok := ds.Spec.Template.Annotations[annotation]
+		return sum, ok
+	}
+
+	legacy, ok := checksum(t, ztunnelSpireValues)
+	require.True(t, ok)
+	sum, ok := checksum(t, ztunnelSpireValues, spireCRD)
+	require.True(t, ok)
+	require.NotEmpty(t, sum)
+	require.Equal(t, legacy, sum, "registration ownership does not change delegate authorization")
+	other, ok := checksum(t, ztunnelSpireValues, spireCRD, "authentication.mutual.spire.install.agent.skipKubeletVerification=false")
+	require.True(t, ok)
+	require.NotEqual(t, sum, other)
+}
+
+// TestSpireCRDPrerequisites checks that useCRD requires the chart-managed SPIRE
+// CA for ztunnel and the ClusterSPIFFEID and ClusterStaticEntry CRDs of the
+// bundled controller-manager.
+func TestSpireCRDPrerequisites(t *testing.T) {
+	crdURL := func(version, resource string) string {
+		return fmt.Sprintf("https://raw.githubusercontent.com/spiffe/spire-controller-manager/v%s/config/crd/bases/spire.spiffe.io_%s.yaml", version, resource)
+	}
+	const trustCRDsExist = " or set .Values.encryption.ztunnel.spire.trustCRDsExist=true"
+	for _, tt := range []struct {
+		name        string
+		apiVersions []string
+		err         string
+	}{
+		{
+			name: "no CRDs",
+			err:  "requires the spire.spiffe.io/v1alpha1 ClusterSPIFFEID and ClusterStaticEntry CRDs. Please install them with kubectl apply --server-side -f " + crdURL("0.6.2", "clusterspiffeids") + " -f " + crdURL("0.6.2", "clusterstaticentries") + trustCRDsExist,
+		},
+		{
+			name:        "no ClusterSPIFFEID CRD",
+			apiVersions: []string{clusterStaticEntryAPI},
+			err:         "requires the spire.spiffe.io/v1alpha1 ClusterSPIFFEID CRD. Please install it with kubectl apply --server-side -f " + crdURL("0.6.2", "clusterspiffeids") + trustCRDsExist,
+		},
+		{
+			name:        "no ClusterStaticEntry CRD",
+			apiVersions: []string{clusterSPIFFEIDAPI},
+			err:         "requires the spire.spiffe.io/v1alpha1 ClusterStaticEntry CRD. Please install it with kubectl apply --server-side -f " + crdURL("0.6.2", "clusterstaticentries") + trustCRDsExist,
+		},
+		{name: "both CRDs", apiVersions: spireAPIs},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := renderSpireChart(t, nil, tt.apiVersions, ztunnelSpireValues, spireCRD)
+			if tt.err == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, "encryption.ztunnel.spire.useCRD=true "+tt.err)
+			}
+			_, err = renderSpireChart(t, nil, tt.apiVersions, ztunnelSpireValues, spireCRD, "encryption.ztunnel.spire.trustCRDsExist=true")
+			require.NoError(t, err)
+		})
+	}
+	for _, tag := range []string{"v0.7.1", "0.7.1@sha256:" + strings.Repeat("0", 64)} {
+		_, err := renderSpireChart(t, nil, nil, ztunnelSpireValues, spireCRD, "authentication.mutual.spire.install.server.controllerManager.image.tag="+tag)
+		require.ErrorContains(t, err, "kubectl apply --server-side -f "+crdURL("0.7.1", "clusterspiffeids")+" -f "+crdURL("0.7.1", "clusterstaticentries")+trustCRDsExist)
+	}
+
+	for _, override := range []string{
+		"encryption.enabled=false",
+		"encryption.type=wireguard",
+		"encryption.ztunnel.ca.type=internal",
+		"authentication.mutual.spire.enabled=false",
+		"authentication.mutual.spire.install.enabled=false",
+	} {
+		t.Run(override, func(t *testing.T) {
+			_, err := renderSpireChart(t, nil, spireAPIs, ztunnelSpireValues, spireCRD, override)
+			require.ErrorContains(t, err, "encryption.ztunnel.spire.useCRD=true requires encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire, authentication.mutual.spire.enabled=true and authentication.mutual.spire.install.enabled=true")
+		})
+	}
+	_, err := renderSpireChart(t, nil, spireAPIs, ztunnelSpireValues, spireCRD, "operator.enabled=false")
+	require.ErrorContains(t, err, "requires operator.enabled=true to manage SPIRE registration resources")
+}
+
+func TestSpirePreservesInternalCATrustDomain(t *testing.T) {
+	rendered := renderSpire(t, ztunnelSpireValues, "encryption.ztunnel.ca.type=internal")
+	ciliumConf := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/cilium-configmap.yaml")
+	require.Equal(t, "spiffe.cilium", ciliumConf.Data["mesh-auth-spiffe-trust-domain"])
+	require.NotContains(t, ciliumConf.Data, "ztunnel-spiffe-trust-domain")
+}
+
+func TestSpireStableServiceAndDistinctDatastores(t *testing.T) {
+	for _, useCRD := range []bool{false, true} {
+		t.Run(fmt.Sprintf("useCRD=%t", useCRD), func(t *testing.T) {
+			rendered := renderSpire(t, ztunnelSpireValues, fmt.Sprintf("encryption.ztunnel.spire.useCRD=%t", useCRD))
+			name, bundle := "spire-server", "spire-bundle"
+			if useCRD {
+				name, bundle = "spire-server-crd", "spire-server-crd-bundle"
+			}
+			service := spireManifest[corev1.Service](t, rendered, spireServerPath+"service.yaml")
+			require.Equal(t, "spire-server", service.Name)
+			require.Equal(t, map[string]string{"app": name}, service.Spec.Selector)
+			sts := spireManifest[appsv1.StatefulSet](t, rendered, spireServerPath+"statefulset.yaml")
+			require.Equal(t, name, sts.Name)
+			require.Equal(t, "spire-server", sts.Spec.ServiceName)
+			require.Equal(t, service.Spec.Selector, sts.Spec.Selector.MatchLabels)
+			require.Equal(t, name, sts.Spec.Template.Labels["app"])
+			require.Equal(t, name, spireVolume(t, sts.Spec.Template.Spec, "spire-config").ConfigMap.Name)
+			require.Equal(t, name, spireManifest[corev1.ConfigMap](t, rendered, spireServerPath+"configmap.yaml").Name)
+			require.Equal(t, bundle, spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/spire/bundle-configmap.yaml").Name)
+			agent := spireManifest[appsv1.DaemonSet](t, rendered, "cilium/templates/spire/agent/daemonset.yaml")
+			require.Equal(t, bundle, spireVolume(t, agent.Spec.Template.Spec, "spire-bundle").ConfigMap.Name)
+			config := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/spire/agent/configmap.yaml").Data["agent.conf"]
+			require.Contains(t, config, `server_address = "spire-server"`)
+		})
+	}
+}
+
+func TestSpireDelegateAuthorizationIndependentOfRegistration(t *testing.T) {
+	for _, useCRD := range []bool{false, true} {
+		rendered := renderSpire(t, ztunnelSpireValues, fmt.Sprintf("encryption.ztunnel.spire.useCRD=%t", useCRD),
+			"authentication.mutual.spire.trustDomain=example.org")
+		config := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/spire/agent/configmap.yaml").Data["agent.conf"]
+		require.Equal(t, 1, strings.Count(config, `"spiffe://example.org/ztunnel"`))
+		require.Contains(t, config, `"spiffe://example.org/cilium-agent"`)
+	}
+	for _, override := range []string{"encryption.enabled=false", "encryption.type=wireguard", "encryption.ztunnel.ca.type=internal"} {
+		rendered := renderSpire(t, ztunnelSpireValues, override)
+		config := spireManifest[corev1.ConfigMap](t, rendered, "cilium/templates/spire/agent/configmap.yaml").Data["agent.conf"]
+		require.NotContains(t, config, "/ztunnel")
+	}
+}

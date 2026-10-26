@@ -91,6 +91,23 @@ spec:
         args:
         - --config-dir=/tmp/cilium/config-map
         - --debug=$(CILIUM_DEBUG)
+        {{- if .Values.encryption.ztunnel.spire.useCRD }}
+        - --enable-ztunnel-spiffeid-crd=true
+        - {{ printf "--mesh-auth-spiffe-trust-domain=%s" .Values.authentication.mutual.spire.trustDomain | quote }}
+        - {{ printf "--mesh-auth-spire-registration-name-prefix=cilium-spire-%s-%s" (include "cilium.namespace" .) .Release.Name | quote }}
+        - {{ printf "--mesh-auth-spire-registration-class=%s" .Values.encryption.ztunnel.spire.className | quote }}
+        {{- $accounts := dict "spire-agent" (printf "%s/%s" .Values.authentication.mutual.spire.install.namespace .Values.authentication.mutual.spire.install.agent.serviceAccount.name) }}
+        {{- range $component, $account := dict "cilium-agent" .Values.serviceAccounts.cilium.name "cilium-operator" .Values.serviceAccounts.operator.name "ztunnel" .Values.serviceAccounts.ztunnel.name }}
+        {{- $_ := set $accounts $component (printf "%s/%s" (include "cilium.namespace" $) $account) }}
+        {{- end }}
+        - {{ printf "--mesh-auth-spire-registration-service-accounts=%s" (include "cilium.spire.registrationMap" $accounts) | quote }}
+        {{- with .Values.commonLabels }}
+        - {{ printf "--mesh-auth-spire-registration-labels=%s" (include "cilium.spire.registrationMap" .) | quote }}
+        {{- end }}
+        {{- with .Values.authentication.mutual.spire.annotations }}
+        - {{ printf "--mesh-auth-spire-registration-annotations=%s" (include "cilium.spire.registrationMap" .) | quote }}
+        {{- end }}
+        {{- end }}
         {{- with .Values.operator.extraArgs }}
         {{- toYaml . | trim | nindent 8 }}
         {{- end }}

@@ -15,6 +15,17 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 rules:
+{{- if .Values.encryption.ztunnel.spire.useCRD }}
+- apiGroups:
+  - spire.spiffe.io
+  resources:
+  - clusterspiffeids
+  - clusterstaticentries
+  verbs:
+  - get
+  - create
+  - update
+{{- end }}
 - apiGroups:
   - ""
   resources:

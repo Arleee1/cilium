@@ -28,5 +28,5 @@ spec:
     targetPort: grpc
     protocol: TCP
   selector:
-    app: spire-server
+    app: {{ include "cilium.spire.serverName" . }}
 {{- end }}

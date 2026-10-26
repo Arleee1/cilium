@@ -1,8 +1,15 @@
 {{- if and .Values.authentication.mutual.spire.enabled .Values.authentication.mutual.spire.install.enabled -}}
+{{- $useCRD := .Values.encryption.ztunnel.spire.useCRD -}}
+{{- $server := .Values.authentication.mutual.spire.install.server -}}
+{{- $serverName := include "cilium.spire.serverName" . -}}
+{{- $podSecurityContext := $server.podSecurityContext -}}
+{{- if $useCRD -}}
+{{- $podSecurityContext = mergeOverwrite (dict "runAsUser" 1000 "runAsGroup" 1000 "fsGroup" 1000) (deepCopy ($podSecurityContext | default dict)) -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: spire-server
+  name: {{ $serverName }}
   namespace: {{ .Values.authentication.mutual.spire.install.namespace }}
   {{- if or .Values.authentication.mutual.spire.install.server.annotations .Values.authentication.mutual.spire.annotations }}
   annotations:
@@ -14,7 +21,7 @@ metadata:
     {{- end }}
   {{- end }}
   labels:
-    app: spire-server
+    app: {{ $serverName }}
     {{- with .Values.commonLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -25,14 +32,18 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: spire-server
+      app: {{ $serverName }}
   serviceName: spire-server
   template:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: spire-server
+        {{- if $useCRD }}
+        cilium.io/spire-server-configmap-checksum: {{ include (print $.Template.BasePath "/spire/server/configmap.yaml") . | sha256sum | quote }}
+        cilium.io/spire-controller-manager-configmap-checksum: {{ include (print $.Template.BasePath "/spire/server/controller-manager-configmap.yaml") . | sha256sum | quote }}
+        {{- end }}
       labels:
-        app: spire-server
+        app: {{ $serverName }}
         {{- with .Values.commonLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -42,11 +53,13 @@ spec:
     spec:
       priorityClassName: {{ include "cilium.priorityClass" (list $ .Values.authentication.mutual.spire.install.server.priorityClassName "system-node-critical") }}
       serviceAccountName: {{ .Values.authentication.mutual.spire.install.server.serviceAccount.name }}
+      {{- if not $useCRD }}
       shareProcessNamespace: true
+      {{- end }}
       {{- if (semverCompare ">= 1.33-0" .Capabilities.KubeVersion.Version) }}
       hostUsers: true
       {{- end }}
-      {{- with .Values.authentication.mutual.spire.install.server.podSecurityContext }}
+      {{- with $podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -59,6 +72,7 @@ spec:
         {{- toYaml .Values.authentication.mutual.spire.install.server.initContainers | nindent 8 }}
       {{- end }}
       containers:
+      {{- if not $useCRD }}
       - name: cilium-init
         image: {{ include "cilium.image" .Values.authentication.mutual.spire.install.initImage | quote }}
         imagePullPolicy: {{ .Values.authentication.mutual.spire.install.initImage.pullPolicy }}
@@ -67,6 +81,7 @@ spec:
           - -c
           - |
             {{- tpl (.Files.Get "files/spire/init.bash") . | nindent 12 }}
+      {{- end }}
       - name: spire-server
         {{- if eq (typeOf .Values.authentication.mutual.spire.install.server.image) "string" }}
         image: {{ .Values.authentication.mutual.spire.install.server.image }}
@@ -116,6 +131,46 @@ spec:
         securityContext:
           {{- toYaml . | nindent 10 }}
         {{- end }}
+      {{- if $useCRD }}
+      - name: spire-controller-manager
+        image: {{ include "cilium.image" $server.controllerManager.image | quote }}
+        imagePullPolicy: {{ $server.controllerManager.image.pullPolicy }}
+        args:
+        - -config
+        - /run/spire/controller-manager/controller-manager.yaml
+        env:
+        - name: ENABLE_WEBHOOKS
+          value: "false"
+        {{- with $server.controllerManager.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with $server.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        ports:
+        - name: controller-http
+          containerPort: 8082
+        volumeMounts:
+        - name: spire-controller-config
+          mountPath: /run/spire/controller-manager
+          readOnly: true
+        - name: spire-server-socket
+          mountPath: /tmp/spire-server/private
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: controller-http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: controller-http
+          periodSeconds: 5
+      {{- end }}
       {{- with .Values.authentication.mutual.spire.install.server.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -131,11 +186,20 @@ spec:
       volumes:
       - name: spire-config
         configMap:
-          name: spire-server
+          name: {{ $serverName }}
       - name: spire-server-socket
+        {{- if $useCRD }}
+        emptyDir: {}
+        {{- else }}
         hostPath:
           path: /var/run/spire-server/sockets
           type: DirectoryOrCreate
+        {{- end }}
+      {{- if $useCRD }}
+      - name: spire-controller-config
+        configMap:
+          name: spire-server-crd-controller-manager
+      {{- end }}
   {{- if .Values.authentication.mutual.spire.install.server.dataStorage.enabled }}
   volumeClaimTemplates:
   - metadata:

@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: spire-server
+  name: {{ include "cilium.spire.serverName" . }}
   {{- with .Values.commonLabels }}
   labels:
     {{- toYaml . | nindent 4 }}
@@ -62,6 +62,9 @@ data:
       Notifier "k8sbundle" {
         plugin_data {
           namespace = {{ .Values.authentication.mutual.spire.install.namespace | quote }}
+          {{- if .Values.encryption.ztunnel.spire.useCRD }}
+          config_map = {{ include "cilium.spire.bundleName" . | quote }}
+          {{- end }}
         }
       }
     }
