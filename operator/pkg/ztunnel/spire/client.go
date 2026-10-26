@@ -44,13 +44,15 @@ func DefaultSpireEntryConfig() SpireEntryConfig {
 	}
 }
 
-// Cell is the cell for the SPIRE client.
+// Cell manages SPIRE registration through the Entry API or Kubernetes resources.
 var Cell = cell.Module(
 	"spire-client",
-	"Spire Server API Client",
+	"SPIRE Registration",
 	cell.Config(defaultClientConfig),
+	cell.Config(defaultRegistrationConfig),
 	cell.Provide(DefaultSpireEntryConfig),
 	cell.Provide(NewClient),
+	cell.Invoke(registerResources),
 )
 
 // ClientConfig contains the configuration for the SPIRE client.
@@ -59,6 +61,9 @@ type ClientConfig struct {
 	SpireServerAddress           string        `mapstructure:"mesh-auth-spire-server-address"`
 	SpireServerConnectionTimeout time.Duration `mapstructure:"mesh-auth-spire-server-connection-timeout"`
 	SpiffeTrustDomain            string        `mapstructure:"mesh-auth-spiffe-trust-domain"`
+	// UseCRD manages registration resources for spire-controller-manager
+	// instead of registering workloads through the SPIRE Entry API.
+	UseCRD bool `mapstructure:"enable-ztunnel-spiffeid-crd"`
 }
 
 var defaultClientConfig = ClientConfig{
@@ -82,6 +87,9 @@ func (cfg ClientConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("mesh-auth-spiffe-trust-domain",
 		cfg.SpiffeTrustDomain,
 		"The trust domain for the SPIFFE identity.")
+	flags.Bool("enable-ztunnel-spiffeid-crd",
+		cfg.UseCRD,
+		"Manage SPIRE ClusterStaticEntries and a workload ClusterSPIFFEID instead of using the SPIRE Entry API (requires ztunnel with the SPIRE CA).")
 }
 
 type params struct {
@@ -112,9 +120,11 @@ type Client struct {
 	initialized chan struct{}
 }
 
-// NewClient creates a new SPIRE client for ztunnel namespace enrollment.
+// NewClient creates a new SPIRE client for ztunnel namespace enrollment. It
+// returns nil without the SPIRE CA, and in CRD mode, where a ClusterSPIFFEID
+// reconciled by spire-controller-manager registers the workloads.
 func NewClient(params params) *Client {
-	if !params.ZtunnelConfig.UseSpireCA() {
+	if !params.ZtunnelConfig.UseSpireCA() || params.ClientConfig.UseCRD {
 		return nil
 	}
 

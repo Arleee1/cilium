@@ -16,7 +16,7 @@ import (
 	"github.com/cilium/cilium/pkg/ztunnel/table"
 )
 
-// Cell manages SPIRE enrollment for namespaces when ztunnel encryption is enabled.
+// Cell manages SPIRE registration when ztunnel encryption is enabled.
 var Cell = cell.Module(
 	"ztunnel",
 	"ZTunnel SPIRE Enrollment",
@@ -42,15 +42,17 @@ func enableMetrics(cfg config.Config, m *ztunnelReconciler.Metrics) {
 }
 
 func registerEnrollmentReconciler(
-	cfg config.Config,
 	params reconciler.Params,
 	ops reconciler.Operations[*table.EnrolledNamespace],
 	tbl statedb.RWTable[*table.EnrolledNamespace],
+	client *spire.Client,
 ) error {
 	// The reconciler manages SPIRE entries for enrolled namespaces, so it only
 	// runs when ztunnel is configured to use an external SPIRE CA. With the
-	// internal CA there is no SPIRE server to enroll against.
-	if !cfg.UseSpireCA() {
+	// internal CA there is no SPIRE server to enroll against, and in CRD mode
+	// a ClusterSPIFFEID registers the workloads instead. NewClient returns nil
+	// in both cases, so a nil client is the only check needed.
+	if client == nil {
 		return nil
 	}
 	_, err := reconciler.Register(
