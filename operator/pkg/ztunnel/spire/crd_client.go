@@ -44,6 +44,7 @@ type CRDClient struct {
 	client      dynamic.ResourceInterface
 	trustDomain string
 	entryCfg    SpireEntryConfig
+	className   string
 	initialized chan struct{}
 }
 
@@ -54,8 +55,23 @@ func newCRDClient(params params) (*CRDClient, error) {
 	if params.K8sClient == nil || !params.K8sClient.IsEnabled() || params.K8sClient.RestConfig() == nil {
 		return nil, fmt.Errorf("SPIRE CRD backend requires a Kubernetes client")
 	}
-	if _, err := spiffeid.TrustDomainFromString(params.ClientConfig.SpiffeTrustDomain); err != nil {
+	trustDomain, err := spiffeid.TrustDomainFromString(params.ClientConfig.SpiffeTrustDomain)
+	if err != nil {
 		return nil, fmt.Errorf("invalid SPIRE CRD trust domain: %w", err)
+	}
+	entryCfg := params.EntryConfig
+	if params.ClientConfig.CRDParentID != "" {
+		parent, err := spiffeid.FromString(params.ClientConfig.CRDParentID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SPIRE CRD parent ID: %w", err)
+		}
+		if !parent.MemberOf(trustDomain) || parent.Path() == "" {
+			return nil, fmt.Errorf("SPIRE CRD parent ID must have a path in trust domain %q", trustDomain.Name())
+		}
+		entryCfg.ParentID = parent.Path()
+	}
+	if params.ClientConfig.CRDClassName != "" && strings.TrimSpace(params.ClientConfig.CRDClassName) == "" {
+		return nil, fmt.Errorf("SPIRE CRD class must not be blank")
 	}
 	dynClient, err := dynamic.NewForConfig(params.K8sClient.RestConfig())
 	if err != nil {
@@ -64,7 +80,8 @@ func newCRDClient(params params) (*CRDClient, error) {
 	client := &CRDClient{
 		client:      dynClient.Resource(clusterStaticEntryGVR),
 		trustDomain: params.ClientConfig.SpiffeTrustDomain,
-		entryCfg:    params.EntryConfig,
+		entryCfg:    entryCfg,
+		className:   params.ClientConfig.CRDClassName,
 		initialized: make(chan struct{}),
 	}
 	params.Lifecycle.Append(cell.Hook{OnStart: client.onStart})
@@ -131,6 +148,9 @@ func (c *CRDClient) buildClusterStaticEntry(id string) (*unstructured.Unstructur
 		"spiffeID":  "spiffe://" + entry.SpiffeId.TrustDomain + entry.SpiffeId.Path,
 		"parentID":  "spiffe://" + entry.ParentId.TrustDomain + entry.ParentId.Path,
 		"selectors": selectors,
+	}
+	if c.className != "" {
+		obj.Object["spec"].(map[string]any)["className"] = c.className
 	}
 	return obj, nil
 }

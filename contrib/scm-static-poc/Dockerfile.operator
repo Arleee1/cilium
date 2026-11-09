@@ -1,0 +1,32 @@
+# Copyright Authors of Cilium
+# SPDX-License-Identifier: Apache-2.0
+
+ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:28c9845c5392a7eb9868b4fe7ec8c4eb77a18446@sha256:3e5cc4cfed3498f518e2dcc2ecae035d2ec89751f3ec0b33e2d6171d3f69ceef
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:4ac5c7c3a318788dd09baf75e0e1bea17ca9dbcd@sha256:dc71a8063db8f1ae572b8ac8832de251f24efaaae0544ee359e54a7b4159df7d
+
+FROM --platform=${BUILDPLATFORM} ${CILIUM_BUILDER_IMAGE} AS builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /go/src/github.com/cilium/cilium
+RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium \
+    --mount=type=cache,target=/root/.cache \
+    --mount=type=cache,target=/go/pkg \
+    GOMAXPROCS=4 make GOARCH=${TARGETARCH} DESTDIR=/out/${TARGETOS}/${TARGETARCH} \
+    EXTRA_GO_BUILD_FLAGS=-p=2 build-container-operator-generic install-container-binary-operator-generic
+RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium \
+    --mount=type=cache,target=/root/.cache \
+    --mount=type=cache,target=/go/pkg \
+    GOMAXPROCS=4 GOFLAGS=-p=2 make licenses-all && mv LICENSE.all /out/LICENSE.all
+
+# Reuse the pinned runtime's certificates and gops instead of network installers.
+FROM ${CILIUM_RUNTIME_IMAGE} AS runtime
+FROM scratch AS release
+ARG TARGETOS
+ARG TARGETARCH
+COPY --from=runtime /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=runtime /usr/bin/gops /usr/bin/gops
+COPY --from=builder /out/${TARGETOS}/${TARGETARCH}/usr/bin/cilium-operator-generic /usr/bin/cilium-operator-generic
+COPY --from=builder /out/LICENSE.all /LICENSE.all
+COPY --chmod=777 --from=scratch / /home/gops
+ENV GOPS_CONFIG_DIR=/home/gops
+WORKDIR /

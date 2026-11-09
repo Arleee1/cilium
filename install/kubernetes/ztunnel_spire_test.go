@@ -95,6 +95,15 @@ func TestZtunnelSpireCRDRendering(t *testing.T) {
 			wantCRD:   true,
 			extraArgs: []string{"--log-level=debug", "--leader-election-lease-duration=30s"},
 		},
+		{
+			name:    "external CRD parent and class",
+			values:  []string{ztunnelSpireValues, ztunnelSpireCRD},
+			wantCRD: true,
+			extraArgs: []string{
+				"--mesh-auth-spire-crd-parent-id=spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent",
+				"--mesh-auth-spire-crd-class=cilium-spire",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

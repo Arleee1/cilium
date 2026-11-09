@@ -71,6 +71,7 @@ cilium-operator-alibabacloud [flags]
       --enable-policy-secrets-sync                                 Enables fan-in TLS secrets sync from multiple namespaces to singular namespace (specified by policy-secrets-namespace flag)
       --enable-wireguard                                           Enable WireGuard
       --enable-ztunnel                                             Use zTunnel as Cilium's encryption infrastructure
+      --enable-ztunnel-spiffeid-crd                                Register each ServiceAccount in an enrolled namespace using a ClusterStaticEntry instead of the SPIRE Entry API (requires ztunnel with the SPIRE CA).
       --enforce-ingress-https                                      Enforces https for host having matching TLS host in Ingress. Incoming traffic to http listener will return 308 http error code with respective location in header. (default true)
       --gateway-api-hostnetwork-enabled                            Exposes Gateway listeners on the host network.
       --gateway-api-hostnetwork-nodelabelselector string           Label selector that matches the nodes where the gateway listeners should be exposed. It's a list of comma-separated key-value label pairs. e.g. 'kubernetes.io/os=linux,kubernetes.io/hostname=kind-worker'
@@ -131,6 +132,8 @@ cilium-operator-alibabacloud [flags]
       --max-connected-clusters uint32                              Maximum number of clusters to be connected in a clustermesh. Increasing this value will reduce the maximum number of identities available. Valid configurations are [255, 511]. (default 255)
       --mesh-auth-spiffe-trust-domain string                       The trust domain for the SPIFFE identity. (default "spiffe.cilium")
       --mesh-auth-spire-agent-socket string                        The path for the SPIRE admin agent Unix socket. (default "/run/spire/sockets/agent/agent.sock")
+      --mesh-auth-spire-crd-class string                           Optional controller class for operator-produced ClusterStaticEntries; empty leaves the class unset on new entries (requires the CRD backend).
+      --mesh-auth-spire-crd-parent-id string                       Optional parent SPIFFE ID for operator-produced ClusterStaticEntries in the configured trust domain; empty retains the default /ztunnel parent (requires the CRD backend).
       --mesh-auth-spire-server-address string                      SPIRE server endpoint. (default "spire-server.spire.svc:8081")
       --mesh-auth-spire-server-connection-timeout duration         SPIRE server connection timeout. (default 10s)
       --metrics-sampling-interval duration                         Set the internal metrics sampling interval (default 5m0s)

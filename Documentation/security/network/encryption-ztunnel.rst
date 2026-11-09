@@ -108,6 +108,26 @@ SQLite database, or publisher component. The chart also supplies bootstrap
 Cilium operator, and ztunnel. Keeping the Cilium identities preserves other
 consumers of the SPIRE integration.
 
+For an existing, externally configured SPIRE installation, the CRD backend can
+override the workload parent and controller class without changing its legacy
+defaults. Set these operator arguments through ``operator.extraArgs``:
+
+.. code-block:: yaml
+
+   operator:
+     extraArgs:
+       - --mesh-auth-spire-crd-parent-id=spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent
+       - --mesh-auth-spire-crd-class=cilium-spire
+
+Both require ``encryption.ztunnel.spire.useCRD=true``. The parent must be a valid
+SPIFFE ID with a nonempty path in the configured trust domain. Without the
+override, the parent remains ``spiffe://<trust-domain>/ztunnel``. New entries
+omit ``className`` by default; an explicit class is written to each owned entry.
+The Entry API backend and bootstrap declarations are unchanged. Configure the
+existing controller to watch that class, and preserve the matching delegation
+and node-alias authorization. These flags do not reconfigure the controller or
+grant the parent permission to issue identities.
+
 The controller reconciles only ``ClusterStaticEntry`` resources. It does not
 require the ``ClusterSPIFFEID`` or ``ClusterFederatedTrustDomain`` CRDs. Admission
 webhooks are disabled with ``ENABLE_WEBHOOKS=false``; no webhook resources or

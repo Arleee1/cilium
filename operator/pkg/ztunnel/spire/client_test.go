@@ -145,3 +145,61 @@ func TestCRDClientConstructionErrors(t *testing.T) {
 	_, err = NewClient(p)
 	require.ErrorContains(t, err, "invalid SPIRE CRD trust domain")
 }
+
+func TestCRDClientRegistrationOverrides(t *testing.T) {
+	log := hivetest.Logger(t)
+	_, cs := k8sClient.NewFakeClientset(log)
+	var registration SpireClient
+	h := hive.New(
+		Cell,
+		cell.Config(ztunnel.DefaultConfig),
+		cell.Provide(func() client.Clientset { return cs }),
+		cell.Invoke(func(c SpireClient) { registration = c }),
+	)
+	h.Viper().Set("enable-ztunnel", true)
+	h.Viper().Set("ztunnel-ca-type", "spire")
+	h.Viper().Set("enable-ztunnel-spiffeid-crd", true)
+	h.Viper().Set("mesh-auth-spiffe-trust-domain", "spiffe.cilium")
+	h.Viper().Set("mesh-auth-spire-crd-parent-id", "spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent")
+	h.Viper().Set("mesh-auth-spire-crd-class", "cilium-spire")
+	require.NoError(t, h.Populate(log))
+	crd := registration.(*CRDClient)
+	obj, err := crd.buildClusterStaticEntry("sa-poc-a/unused")
+	require.NoError(t, err)
+	require.Equal(t, "ztunnel-sa-poc-a.unused", obj.GetName())
+	require.Equal(t, map[string]any{
+		"className": "cilium-spire",
+		"spiffeID":  "spiffe://spiffe.cilium/ns/sa-poc-a/sa/unused",
+		"parentID":  "spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent",
+		"selectors": []any{"k8s:ns:sa-poc-a", "k8s:sa:unused"},
+	}, obj.Object["spec"])
+	require.Equal(t, "/ztunnel", DefaultSpireEntryConfig().ParentID, "CRD overrides must not mutate the Entry API defaults")
+}
+
+func TestCRDClientRejectsInvalidOverrides(t *testing.T) {
+	log := hivetest.Logger(t)
+	_, cs := k8sClient.NewFakeClientset(log)
+	for _, tt := range []struct {
+		name, parent, class, want string
+		crd                       bool
+	}{
+		{name: "parent without CRD", parent: "spiffe://spiffe.cilium/parent", want: "require enable-ztunnel-spiffeid-crd"},
+		{name: "class without CRD", class: "cilium-spire", want: "require enable-ztunnel-spiffeid-crd"},
+		{name: "relative parent", crd: true, parent: "/parent", want: "invalid SPIRE CRD parent ID"},
+		{name: "foreign parent", crd: true, parent: "spiffe://other.test/parent", want: "must have a path in trust domain"},
+		{name: "empty parent path", crd: true, parent: "spiffe://spiffe.cilium", want: "must have a path in trust domain"},
+		{name: "blank class", crd: true, class: " \t", want: "class must not be blank"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultClientConfig
+			cfg.UseCRD, cfg.CRDParentID, cfg.CRDClassName = tt.crd, tt.parent, tt.class
+			registration, err := NewClient(params{
+				Logger: log, K8sClient: cs, Lifecycle: &cell.DefaultLifecycle{},
+				ClientConfig: cfg, EntryConfig: DefaultSpireEntryConfig(),
+				ZtunnelConfig: ztunnel.Config{EnableZTunnel: true, CAType: ztunnel.CATypeSpire},
+			})
+			require.ErrorContains(t, err, tt.want)
+			require.Nil(t, registration)
+		})
+	}
+}

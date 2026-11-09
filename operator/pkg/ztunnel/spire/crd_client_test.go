@@ -178,6 +178,7 @@ func TestCRDClient_ServiceAccountParity(t *testing.T) {
 		spec, found, err := unstructured.NestedMap(obj.Object, "spec")
 		require.NoError(t, err)
 		require.True(t, found)
+		require.NotContains(t, spec, "className", "historical new entries remain classless by default")
 		entry := entries[i]
 		require.Equal(t, "spiffe://"+entry.SpiffeId.TrustDomain+entry.SpiffeId.Path, spec["spiffeID"])
 		require.Equal(t, "spiffe://"+entry.ParentId.TrustDomain+entry.ParentId.Path, spec["parentID"])
@@ -195,6 +196,25 @@ func TestCRDClient_ServiceAccountParity(t *testing.T) {
 	for _, call := range resource.calls {
 		require.True(t, strings.HasPrefix(call, "get:"), call)
 	}
+}
+
+func TestCRDClient_ExplicitClassAndParentUpdate(t *testing.T) {
+	c, resource := newTestCRDClient()
+	require.NoError(t, c.Upsert(t.Context(), "shop/checkout"))
+	obj := resource.objects[crdEntryName("shop/checkout")]
+	obj.SetAnnotations(map[string]string{crdIDAnnotation: "shop/checkout", "external": "retained"})
+	uid := obj.GetUID()
+	c.className = "cilium-spire"
+	c.entryCfg.ParentID = "/ns/cilium-spire/sa/spire-agent"
+	require.NoError(t, c.Upsert(t.Context(), "shop/checkout"))
+	updated := resource.objects[obj.GetName()]
+	require.Equal(t, uid, updated.GetUID())
+	require.Equal(t, "retained", updated.GetAnnotations()["external"])
+	require.Equal(t, "cilium-spire", updated.Object["spec"].(map[string]any)["className"])
+	require.Equal(t, "spiffe://test.cilium/ns/cilium-spire/sa/spire-agent", updated.Object["spec"].(map[string]any)["parentID"])
+	resource.calls = nil
+	require.NoError(t, c.Upsert(t.Context(), "shop/checkout"))
+	require.Equal(t, []string{"get:" + obj.GetName()}, resource.calls)
 }
 
 func TestCRDEntryNamesAndInvalidIDs(t *testing.T) {
