@@ -164,15 +164,22 @@ func TestCRDClientRegistrationOverrides(t *testing.T) {
 	h.Viper().Set("mesh-auth-spire-crd-class", "cilium-spire")
 	require.NoError(t, h.Populate(log))
 	crd := registration.(*CRDClient)
-	obj, err := crd.buildClusterStaticEntry("sa-poc-a/unused")
-	require.NoError(t, err)
-	require.Equal(t, "ztunnel-sa-poc-a.unused", obj.GetName())
-	require.Equal(t, map[string]any{
-		"className": "cilium-spire",
-		"spiffeID":  "spiffe://spiffe.cilium/ns/sa-poc-a/sa/unused",
-		"parentID":  "spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent",
-		"selectors": []any{"k8s:ns:sa-poc-a", "k8s:sa:unused"},
-	}, obj.Object["spec"])
+	for _, namespace := range []string{"sa-poc-a", "sa-poc-b"} {
+		for _, account := range []string{"default", "app", "unused"} {
+			obj, err := crd.buildClusterStaticEntry(namespace + "/" + account)
+			require.NoError(t, err)
+			require.Equal(t, "ztunnel-"+namespace+"."+account, obj.GetName())
+			require.Equal(t, map[string]any{
+				"className": "cilium-spire",
+				"spiffeID":  "spiffe://spiffe.cilium/ns/" + namespace + "/sa/" + account,
+				"parentID":  "spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent",
+				"selectors": []any{"k8s:ns:" + namespace, "k8s:sa:" + account},
+			}, obj.Object["spec"])
+			require.Equal(t, crdManagedByValue, obj.GetLabels()[crdManagedByLabel])
+			require.Equal(t, namespace, obj.GetLabels()[crdNamespaceLabel])
+			require.Equal(t, namespace+"/"+account, obj.GetAnnotations()[crdIDAnnotation])
+		}
+	}
 	require.Equal(t, "/ztunnel", DefaultSpireEntryConfig().ParentID, "CRD overrides must not mutate the Entry API defaults")
 }
 

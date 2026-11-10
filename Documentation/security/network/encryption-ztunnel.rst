@@ -92,41 +92,72 @@ still uses one server, a persistent SQLite datastore, the disk KeyManager, and
 the existing bootstrap sidecar. The operator uses the SPIRE Entry API unless
 ``encryption.ztunnel.spire.useCRD=true``.
 
-For a new bundled installation, the two feature controls are
+For a new bundled installation, the main feature controls are
 ``encryption.ztunnel.spire.useCRD=true`` and
 ``authentication.mutual.spire.install.server.replicas``. CRD installation,
 controllers, bootstrap registration, and the shared-root reference are derived
 from those settings. The existing SPIRE/ztunnel enablement and the platform
 prerequisites below still apply.
 
-With CRD registration, the operator writes one ``ClusterStaticEntry`` per
-ServiceAccount in enrolled namespaces. Each server runs a colocated
+With CRD registration, the operator writes one literal ``ClusterStaticEntry``
+per ServiceAccount in enrolled namespaces, including unused ServiceAccounts.
+Each workload entry has exactly the namespace and ServiceAccount selectors;
+registration does not enumerate Pods. Each server runs a colocated
 ``spire-controller-manager`` that reconciles those resources into its own
 server over a pod-local private API socket. There is no leader election, shared
 SQLite database, or publisher component. The chart also supplies bootstrap
-``ClusterStaticEntry`` resources for the SPIRE agent node alias, Cilium agent,
-Cilium operator, and ztunnel. Keeping the Cilium identities preserves other
-consumers of the SPIRE integration.
+``ClusterStaticEntry`` resources. The default
+``encryption.ztunnel.spire.bootstrapProfile=legacy`` retains the SPIRE agent
+node alias, Cilium agent, Cilium operator, and ztunnel. Keeping these identities
+preserves other consumers of the SPIRE integration and the direct Entry API
+backend.
+
+For a ztunnel-only CRD deployment, explicitly select
+``encryption.ztunnel.spire.bootstrapProfile=ztunnel``. This supplies only the
+SPIRE agent node alias and ztunnel. It does not collapse all workloads into one
+custom resource: there are still two bootstrap entries plus one entry per
+enrolled namespace/ServiceAccount pair. Do not select this profile if another
+consumer needs the Cilium-agent delegated identity or the operator Entry API
+identity. The chart cannot infer that absence from ``useCRD`` alone, so the
+minimal profile is opt-in and rejected without CRD registration. Existing
+socket mounts and shared authorization settings are retained; selecting the
+profile alone does not restart unrelated components.
+
+The ztunnel profile derives the workload parent from the SPIRE agent alias,
+``spiffe://<trust-domain>/ns/<install.namespace>/sa/<install.agent.serviceAccount.name>``.
+An explicit different parent is rejected. The ztunnel identity itself is also
+parented to that alias. The legacy profile keeps the historical ``/ztunnel``
+workload parent unless overridden.
 
 For an existing, externally configured SPIRE installation, the CRD backend can
 override the workload parent and controller class without changing its legacy
-defaults. Set these operator arguments through ``operator.extraArgs``:
+defaults. Use the shared Helm values:
 
 .. code-block:: yaml
 
-   operator:
-     extraArgs:
-       - --mesh-auth-spire-crd-parent-id=spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent
-       - --mesh-auth-spire-crd-class=cilium-spire
+   encryption:
+     ztunnel:
+       spire:
+         useCRD: true
+         bootstrapProfile: ztunnel
+         parentID: spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent
+         className: cilium-spire
 
-Both require ``encryption.ztunnel.spire.useCRD=true``. The parent must be a valid
+Parent and class overrides require ``encryption.ztunnel.spire.useCRD=true``.
+The parent must be a valid
 SPIFFE ID with a nonempty path in the configured trust domain. Without the
-override, the parent remains ``spiffe://<trust-domain>/ztunnel``. New entries
+override, the legacy profile's parent remains ``spiffe://<trust-domain>/ztunnel``.
+New entries
 omit ``className`` by default; an explicit class is written to each owned entry.
-The Entry API backend and bootstrap declarations are unchanged. Configure the
-existing controller to watch that class, and preserve the matching delegation
-and node-alias authorization. These flags do not reconfigure the controller or
-grant the parent permission to issue identities.
+The Entry API backend is unchanged. For chart-managed SPIRE, ``className``
+also applies to bootstrap entries and the controller, and a nonempty class
+sets ``watchClassless=false``. External SPIRE must be configured to match.
+The underlying ``--mesh-auth-spire-crd-parent-id`` and
+``--mesh-auth-spire-crd-class`` binary flags retain their historical defaults.
+Raw ``operator.extraArgs`` overrides remain supported for an unstructured
+external legacy-profile configuration, but cannot override managed or
+structured Helm values. A parent override does not itself grant permission to
+issue identities; retain the corresponding node-alias and delegation chain.
 
 The controller reconciles only ``ClusterStaticEntry`` resources. It does not
 require the ``ClusterSPIFFEID`` or ``ClusterFederatedTrustDomain`` CRDs. Admission
@@ -272,10 +303,27 @@ supplies rendering capabilities; it is not evidence that a cluster has the CRD.
 
 Bootstrap resources belong to this Helm release and use release-qualified
 names. Operator-created ServiceAccount resources remain owned by
-``cilium-operator-ztunnel`` and are not Helm-managed. The controller watches
-classless resources and manages only SPIRE entry IDs prefixed with ``cilium.``.
+``cilium-operator-ztunnel`` and are not Helm-managed. The default controller
+watches classless resources and manages only SPIRE entry IDs prefixed with
+``cilium.``. A nonempty ``encryption.ztunnel.spire.className`` scopes the
+controller and both kinds of producer to that class. Set
+``authentication.mutual.spire.install.server.controllerManager.entryIDPrefix``
+only to the intended ownership prefix, preserving it during adoption.
+The chart never enables ``entryIDPrefixCleanup``.
+On connected upgrades of chart-managed SCM, changes to its existing class or
+prefix are rejected until a separate registration migration establishes the
+new scope. An empty operator class does not clear a class from existing owned
+CSEs; it only leaves new entries classless. Offline rendering and external SCM
+cannot establish that migration, so preserve their class/prefix explicitly.
 It does not adopt or garbage-collect existing direct-API registrations.
 Avoid sharing these classless resources between unrelated trust domains.
+
+The chart rejects obsolete Set/ServiceAccount-template values and bootstrap
+producer arguments instead of silently ignoring them. Remove
+``useSPIFFEIDSet``, ``spiffeIDSet``, ``useServiceAccountSPIFFEID`` and
+``workloadSelectorTemplates`` from ``encryption.ztunnel.spire`` when migrating;
+even a stale ``false`` value is rejected. No Set or Pod enrollment mode or new
+SCM API is introduced by this profile.
 
 When RBAC or ServiceAccounts are managed externally, supply the equivalent
 permissions and accounts yourself. The server needs PSAT token reviews and
@@ -317,6 +365,16 @@ operation, not a replica-count-only upgrade:
 * The chart neither generates nor reads the root Secret during rendering and
   does not automate root rotation. Root changes require explicit lifecycle
   planning; do not treat replacing Secret contents as a safe rotation procedure.
+* Before minimizing an existing bootstrap set, establish that the Cilium
+  identities have no other consumers, and prove fresh SPIRE-agent node
+  attestation, fresh delegated issuance, renewal and cross-node mTLS.
+  Preserve required bootstrap UIDs/specs, workload ownership, SCM class/prefix
+  and every independent store. Remove optional declarations only with exact
+  UID/resourceVersion preconditions, not by leaving them in an ignored class.
+  The deployed POC has different resource names, PSAT selector sets and Helm
+  ownership from this historical chart. Use the separately gated
+  ``contrib/scm-static-poc`` compatibility procedure, not a direct chart
+  upgrade or a rollback to stale Set-mode release values.
 
 Before relying on redundancy, verify registration entries on **each** server,
 agent attestation, and cross-node mTLS in an isolated test environment. Pod

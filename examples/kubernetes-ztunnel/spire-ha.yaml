@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Authors of Cilium
 #
-# For a new Helm release. The two feature controls are useCRD and replicas.
+# For a new, ztunnel-only Helm release with CRD registration.
+# Keep bootstrapProfile=legacy if other consumers need Cilium SPIRE identities.
 # Existing releases must preinstall the CRD and plan the trust migration.
 # Prerequisites: the existing cilium-ztunnel-secrets Secret in the Cilium
 # namespace, spire-upstream-ca (tls.crt/tls.key) in cilium-spire, a suitable
@@ -14,6 +15,8 @@ encryption:
       type: spire
     spire:
       useCRD: true
+      bootstrapProfile: ztunnel
+      className: cilium-spire
 authentication:
   mutual:
     spire:

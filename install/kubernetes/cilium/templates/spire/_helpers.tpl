@@ -10,3 +10,15 @@ Persistent single-server installations retain their existing CA unless overridde
 spire-upstream-ca
 {{- end -}}
 {{- end -}}
+
+{{- define "cilium.spire.agentID" -}}
+{{- printf "spiffe://%s/ns/%s/sa/%s" .Values.authentication.mutual.spire.trustDomain .Values.authentication.mutual.spire.install.namespace .Values.authentication.mutual.spire.install.agent.serviceAccount.name -}}
+{{- end -}}
+
+{{- define "cilium.spire.crdParentID" -}}
+{{- if .Values.encryption.ztunnel.spire.parentID -}}
+{{- .Values.encryption.ztunnel.spire.parentID -}}
+{{- else if eq .Values.encryption.ztunnel.spire.bootstrapProfile "ztunnel" -}}
+{{- include "cilium.spire.agentID" . -}}
+{{- end -}}
+{{- end -}}

@@ -93,6 +93,12 @@ spec:
         - --debug=$(CILIUM_DEBUG)
         {{- if .Values.encryption.ztunnel.spire.useCRD }}
         - --enable-ztunnel-spiffeid-crd=true
+        {{- with include "cilium.spire.crdParentID" . }}
+        - {{ printf "--mesh-auth-spire-crd-parent-id=%s" . | quote }}
+        {{- end }}
+        {{- with .Values.encryption.ztunnel.spire.className }}
+        - {{ printf "--mesh-auth-spire-crd-class=%s" . | quote }}
+        {{- end }}
         {{- end }}
         {{- with .Values.operator.extraArgs }}
         {{- toYaml . | trim | nindent 8 }}

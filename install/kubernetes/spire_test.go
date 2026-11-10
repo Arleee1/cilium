@@ -244,6 +244,7 @@ func TestSpireBootstrapSchemaAndOverrides(t *testing.T) {
 		"serviceAccounts.cilium.name=cilium-custom,serviceAccounts.operator.name=operator-custom,serviceAccounts.ztunnel.name=ztunnel-custom,serviceAccounts.ztunnel.create=false",
 		"authentication.mutual.spire.install.agent.serviceAccount.name=agent-custom,authentication.mutual.spire.install.server.serviceAccount.name=server-custom",
 		"authentication.mutual.spire.adminSocketPath=/run/identity/admin/admin.sock,authentication.mutual.spire.agentSocketPath=/run/identity/workload/api.sock,encryption.ztunnel.spire.containerRuntimeSocketPath=/run/custom/containerd.sock",
+		"encryption.ztunnel.spire.className=custom-class",
 		`commonLabels.app\.kubernetes\.io/managed-by=cilium-operator-ztunnel`,
 		"authentication.mutual.spire.install.server.securityContext.runAsUser=2000,authentication.mutual.spire.install.server.podSecurityContext.fsGroup=2000,commonLabels.team=networking,authentication.mutual.spire.annotations.owner=platform")
 	require.NoError(t, err)
@@ -277,6 +278,7 @@ func TestSpireBootstrapSchemaAndOverrides(t *testing.T) {
 		require.Equal(t, "Helm", entry.GetLabels()["app.kubernetes.io/managed-by"])
 		require.Equal(t, "networking", entry.GetLabels()["team"])
 		require.Equal(t, "platform", entry.GetAnnotations()["owner"])
+		require.Equal(t, "custom-class", entry.Object["spec"].(map[string]any)["className"])
 		require.Empty(t, crdvalidation.ValidateCustomResource(field.NewPath("entry"), entry.Object, validator))
 		id, _, err := unstructured.NestedString(entry.Object, "spec", "spiffeID")
 		require.NoError(t, err)
@@ -296,6 +298,7 @@ func TestSpireBootstrapSchemaAndOverrides(t *testing.T) {
 	node := entries[agentID]
 	require.NotNil(t, node)
 	require.Equal(t, map[string]any{
+		"className": "custom-class",
 		"parentID":  "spiffe://workload.test/spire/server",
 		"spiffeID":  agentID,
 		"selectors": []any{"k8s_psat:cluster:lab-test", "k8s_psat:agent_ns:identity-system", "k8s_psat:agent_sa:agent-custom"},

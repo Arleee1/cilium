@@ -1230,6 +1230,25 @@ encryption:
       # If RBAC or the operator ServiceAccount is managed externally, provide the
       # equivalent ClusterStaticEntry permissions outside this chart.
       useCRD: false
+      # @schema
+      # enum: [legacy, ztunnel]
+      # @schema
+      # -- Bootstrap identity consumers. "legacy" retains the Cilium agent and
+      # operator identities. "ztunnel" requires useCRD and supplies only the
+      # SPIRE agent node alias and ztunnel; select it only when no other consumer
+      # needs the Cilium identities. Shared socket and authorization settings
+      # are retained so bootstrap selection alone does not roll unrelated pods.
+      # External SPIRE must supply the equivalent bootstrap and authorization.
+      bootstrapProfile: legacy
+      # -- Optional workload parent SPIFFE ID in the configured trust domain.
+      # Requires useCRD. Empty retains /ztunnel in the legacy profile; the
+      # ztunnel profile derives the SPIRE agent alias from install.namespace and
+      # install.agent.serviceAccount.name and rejects a different parent.
+      parentID: ""
+      # -- Controller class for operator workload and chart bootstrap entries.
+      # Requires useCRD. Chart-managed SCM watches only this class when nonempty;
+      # empty preserves classless defaults. Configure external SCM to match.
+      className: ""
       # -- Node-local containerd CRI socket used by ztunnel for delegated PID
       # attestation with chart-managed SPIRE. Mounted read-only into ztunnel;
       # access to this socket still grants privileged container-runtime access.
@@ -4625,6 +4644,13 @@ authentication:
           # Settings for the sidecar installed when encryption.ztunnel.spire.useCRD=true.
           # Each controller reconciles ClusterStaticEntries into its pod-local server.
           controllerManager:
+            # @schema
+            # minLength: 1
+            # pattern: '^\S+$'
+            # @schema
+            # -- SPIRE entry ownership prefix. Preserve the existing prefix
+            # during adoption; no prefix cleanup is enabled by this chart.
+            entryIDPrefix: cilium
             # -- SPIRE controller-manager image. Keep the bundled CRD compatible
             # when overriding this image.
             image:

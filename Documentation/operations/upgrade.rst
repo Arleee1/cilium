@@ -303,6 +303,33 @@ storage still requires explicit StatefulSet recreation; no PVC is deleted or
 converted automatically. See :ref:`ztunnel_spire_installation` for prerequisites,
 ownership, storage, and verification details.
 
+The default ``encryption.ztunnel.spire.bootstrapProfile=legacy`` preserves
+the four CRD-mode bootstrap identities and the direct Entry API behavior.
+The opt-in ``ztunnel`` profile requires CRD mode and retains only the SPIRE
+agent alias and ztunnel. It still produces one literal workload CSE per
+enrolled namespace/ServiceAccount, including unused accounts. Select it only
+after proving fresh node attestation, issuance and renewal and confirming that
+no other consumer needs the Cilium-agent or operator identity.
+
+Use ``encryption.ztunnel.spire.parentID`` and ``className`` for coordinated
+producer/bootstrap/controller settings. The ztunnel profile derives its parent
+from the agent alias and rejects a different parent. Empty values retain
+historical ``/ztunnel`` and classless defaults in the legacy profile.
+Raw operator parent/class arguments cannot override managed or structured
+Helm configuration. Preserve
+``authentication.mutual.spire.install.server.controllerManager.entryIDPrefix``;
+connected chart-managed upgrades reject unplanned class or prefix changes.
+No prefix cleanup is enabled.
+
+Remove obsolete ``useSPIFFEIDSet``, ``spiffeIDSet``,
+``useServiceAccountSPIFFEID`` and ``workloadSelectorTemplates`` keys under
+``encryption.ztunnel.spire``, even if disabled or null. They are rejected rather
+than silently accepted. Do not reuse stale Set-mode release values or an old
+Set-mode rollback as recovery for a static-profile migration. The existing
+POC requires the separately guarded compatibility procedure in
+``contrib/scm-static-poc`` because its resource names, bootstrap ownership and
+PSAT selectors differ from the historical chart.
+
 .. _kvstore_to_crd_migration:
 
 Migrating from kvstore-backed identities to Kubernetes CRD-backed identities

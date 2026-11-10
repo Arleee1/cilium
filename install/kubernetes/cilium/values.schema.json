@@ -326,6 +326,11 @@
                         },
                         "controllerManager": {
                           "properties": {
+                            "entryIDPrefix": {
+                              "minLength": 1,
+                              "pattern": "^\\S+$",
+                              "type": "string"
+                            },
                             "image": {
                               "properties": {
                                 "digest": {
@@ -2170,7 +2175,20 @@
             },
             "spire": {
               "properties": {
+                "bootstrapProfile": {
+                  "enum": [
+                    "legacy",
+                    "ztunnel"
+                  ],
+                  "type": "string"
+                },
+                "className": {
+                  "type": "string"
+                },
                 "containerRuntimeSocketPath": {
+                  "type": "string"
+                },
+                "parentID": {
                   "type": "string"
                 },
                 "useCRD": {

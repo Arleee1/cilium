@@ -136,9 +136,47 @@
 {{- end }}
 
 {{/* validate Cilium operator */}}
+{{- $spire := .Values.encryption.ztunnel.spire }}
+{{- range $key := list "useSPIFFEIDSet" "spiffeIDSet" "useServiceAccountSPIFFEID" "workloadSelectorTemplates" }}
+  {{- if hasKey $spire $key }}
+    {{ fail (printf "Remove obsolete encryption.ztunnel.spire.%s values; this chart supports literal per-ServiceAccount ClusterStaticEntries, not Set or Pod enrollment." $key) }}
+  {{- end }}
+{{- end }}
+{{- if not (has $spire.bootstrapProfile (list "legacy" "ztunnel")) }}
+  {{ fail "encryption.ztunnel.spire.bootstrapProfile must be legacy or ztunnel." }}
+{{- end }}
+{{- if and (not $spire.useCRD) (or (ne $spire.bootstrapProfile "legacy") $spire.parentID $spire.className) }}
+  {{ fail "The ztunnel bootstrap profile, parentID and className require encryption.ztunnel.spire.useCRD=true." }}
+{{- end }}
+{{- if or (not (kindIs "string" $spire.className)) (regexMatch "[[:space:]]" $spire.className) }}
+  {{ fail "encryption.ztunnel.spire.className must be a string without whitespace." }}
+{{- end }}
+{{- if not (kindIs "string" $spire.parentID) }}
+  {{ fail "encryption.ztunnel.spire.parentID must be a string." }}
+{{- end }}
+{{- if $spire.parentID }}
+  {{- if or (not (hasPrefix (printf "spiffe://%s/" .Values.authentication.mutual.spire.trustDomain) $spire.parentID)) (not (regexMatch "^spiffe://[^/]+(/[a-zA-Z0-9._-]+)+$" $spire.parentID)) (regexMatch "/\\.{1,2}(/|$)" $spire.parentID) }}
+    {{ fail "encryption.ztunnel.spire.parentID must be a SPIFFE ID with a nonempty path in the configured trust domain." }}
+  {{- end }}
+  {{- if and (eq $spire.bootstrapProfile "ztunnel") (ne $spire.parentID (include "cilium.spire.agentID" .)) }}
+    {{ fail "The ztunnel bootstrap profile requires the SPIRE agent alias as parentID." }}
+  {{- end }}
+{{- end }}
+{{- $prefix := .Values.authentication.mutual.spire.install.server.controllerManager.entryIDPrefix }}
+{{- if or (not (kindIs "string" $prefix)) (empty $prefix) (regexMatch "[[:space:]]" $prefix) }}
+  {{ fail "authentication.mutual.spire.install.server.controllerManager.entryIDPrefix must be a nonempty string without whitespace." }}
+{{- end }}
 {{- range .Values.operator.extraArgs }}
   {{- if regexMatch "^--enable-ztunnel-spiffeid-crd($|=)" . }}
     {{ fail "Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use encryption.ztunnel.spire.useCRD instead." }}
+  {{- end }}
+  {{- if regexMatch "^--(enable-ztunnel-spiffeid-set-crd|mesh-auth-spire-spiffeid-set-spec|mesh-auth-spire-registration-[a-z-]+)($|=)" . }}
+    {{ fail "Remove obsolete Set/bootstrap registration arguments from operator.extraArgs; use the static-entry profile." }}
+  {{- end }}
+  {{- if regexMatch "^--mesh-auth-spire-crd-(parent-id|class)($|=)" . }}
+    {{- if or (not $spire.useCRD) $.Values.authentication.mutual.spire.install.enabled (ne $spire.bootstrapProfile "legacy") $spire.parentID $spire.className }}
+      {{ fail "Use encryption.ztunnel.spire.parentID and className instead of operator.extraArgs for managed or structured CRD registration." }}
+    {{- end }}
   {{- end }}
 {{- end }}
 {{- if .Values.encryption.ztunnel.spire.useCRD }}
@@ -179,6 +217,18 @@
     {{- end }}
   {{- end }}
   {{- if .Values.encryption.ztunnel.spire.useCRD }}
+    {{- if .Release.IsUpgrade }}
+      {{- $existing := lookup "v1" "ConfigMap" .Values.authentication.mutual.spire.install.namespace "spire-controller-manager" }}
+      {{- if $existing }}
+        {{- $config := fromYaml (get ($existing.data | default dict) "controller-manager.yaml") }}
+        {{- if or (hasKey $config "Error") (not (hasKey $config "entryIDPrefix")) }}
+          {{ fail "Cannot read existing chart-managed SCM configuration; review the registration migration before upgrading." }}
+        {{- end }}
+        {{- if or (ne ($config.className | default "") $spire.className) (ne $config.entryIDPrefix $prefix) }}
+          {{ fail "Changing the chart-managed SCM class or entryIDPrefix requires a planned registration migration; preserve the existing scope." }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
     {{- $installCRDs := .Values.encryption.ztunnel.spire.useCRD }}
     {{- if hasKey .Values.authentication.mutual.spire.install.crds "enabled" }}
       {{- $installCRDs = .Values.authentication.mutual.spire.install.crds.enabled }}
