@@ -116,6 +116,20 @@
                 "enabled": {
                   "type": "boolean"
                 },
+                "ha": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "replicas": {
+                      "minimum": 1,
+                      "maximum": 2147483647,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                },
                 "install": {
                   "properties": {
                     "agent": {
@@ -247,14 +261,6 @@
                       },
                       "type": "object"
                     },
-                    "crds": {
-                      "properties": {
-                        "enabled": {
-                          "type": "boolean"
-                        }
-                      },
-                      "type": "object"
-                    },
                     "enabled": {
                       "type": "boolean"
                     },
@@ -327,9 +333,7 @@
                         "controllerManager": {
                           "properties": {
                             "entryIDPrefix": {
-                              "minLength": 1,
-                              "pattern": "^\\S+$",
-                              "type": "string"
+                              "pattern": "^\\S+$"
                             },
                             "image": {
                               "properties": {
@@ -424,11 +428,6 @@
                         },
                         "priorityClassName": {
                           "type": "string"
-                        },
-                        "replicas": {
-                          "minimum": 1,
-                          "maximum": 2147483647,
-                          "type": "integer"
                         },
                         "resources": {
                           "type": "object"
@@ -2175,13 +2174,6 @@
             },
             "spire": {
               "properties": {
-                "bootstrapProfile": {
-                  "enum": [
-                    "legacy",
-                    "ztunnel"
-                  ],
-                  "type": "string"
-                },
                 "className": {
                   "type": "string"
                 },
@@ -2190,9 +2182,6 @@
                 },
                 "parentID": {
                   "type": "string"
-                },
-                "useCRD": {
-                  "type": "boolean"
                 }
               },
               "type": "object"
@@ -6585,16 +6574,6 @@
           "type": "boolean"
         }
       },
-      "type": "object"
-    },
-    "spire-crds": {
-      "properties": {
-        "global": {
-          "type": "object"
-        }
-      },
-      "description": "ClusterStaticEntry CRD for the Cilium SPIRE integration",
-      "title": "spire-crds",
       "type": "object"
     },
     "standaloneDnsProxy": {

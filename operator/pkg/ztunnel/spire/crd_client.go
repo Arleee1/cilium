@@ -9,11 +9,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
 	"github.com/cilium/hive/cell"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -45,6 +47,9 @@ type CRDClient struct {
 	trustDomain string
 	entryCfg    SpireEntryConfig
 	className   string
+	logger      *slog.Logger
+	crds        apiextensionsclient.CustomResourceDefinitionInterface
+	bootstraps  []*unstructured.Unstructured
 	initialized chan struct{}
 }
 
@@ -73,6 +78,14 @@ func newCRDClient(params params) (*CRDClient, error) {
 	if params.ClientConfig.CRDClassName != "" && strings.TrimSpace(params.ClientConfig.CRDClassName) == "" {
 		return nil, fmt.Errorf("SPIRE CRD class must not be blank")
 	}
+	bootstraps, alias, err := parseBootstrapEntries(params.ClientConfig)
+	if err != nil {
+		return nil, err
+	}
+	if params.ClientConfig.CRDParentID != "" && entryCfg.ParentID != alias.Path() {
+		return nil, fmt.Errorf("SPIRE HA workload parent must match the SPIRE agent bootstrap alias")
+	}
+	entryCfg.ParentID = alias.Path()
 	dynClient, err := dynamic.NewForConfig(params.K8sClient.RestConfig())
 	if err != nil {
 		return nil, fmt.Errorf("create Kubernetes client for SPIRE CRD backend: %w", err)
@@ -82,14 +95,28 @@ func newCRDClient(params params) (*CRDClient, error) {
 		trustDomain: params.ClientConfig.SpiffeTrustDomain,
 		entryCfg:    entryCfg,
 		className:   params.ClientConfig.CRDClassName,
+		logger:      params.Logger,
+		crds:        params.K8sClient.ApiextensionsV1().CustomResourceDefinitions(),
+		bootstraps:  bootstraps,
 		initialized: make(chan struct{}),
 	}
 	params.Lifecycle.Append(cell.Hook{OnStart: client.onStart})
 	return client, nil
 }
 
-func (c *CRDClient) onStart(cell.HookContext) error {
-	close(c.initialized)
+func (c *CRDClient) onStart(ctx cell.HookContext) error {
+	if err := c.ensureCRD(ctx); err != nil {
+		return fmt.Errorf("initialize SPIRE HA CRD: %w", err)
+	}
+	if err := c.ensureBootstraps(ctx); err != nil {
+		return fmt.Errorf("initialize SPIRE HA bootstraps: %w", err)
+	}
+	select {
+	case <-c.initialized:
+	default:
+		close(c.initialized)
+	}
+	c.logger.Info("SPIRE HA bootstrap ready", "entries", len(c.bootstraps))
 	return nil
 }
 

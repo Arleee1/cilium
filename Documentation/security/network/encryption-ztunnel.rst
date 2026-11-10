@@ -90,11 +90,11 @@ certificates. The chart installs SPIRE when
 ``authentication.mutual.spire.install.enabled=true``. The default installation
 still uses one server, a persistent SQLite datastore, the disk KeyManager, and
 the existing bootstrap sidecar. The operator uses the SPIRE Entry API unless
-``encryption.ztunnel.spire.useCRD=true``.
+``authentication.mutual.spire.ha.enabled=true``.
 
 For a new bundled installation, the main feature controls are
-``encryption.ztunnel.spire.useCRD=true`` and
-``authentication.mutual.spire.install.server.replicas``. CRD installation,
+``authentication.mutual.spire.ha.enabled=true`` and
+``authentication.mutual.spire.ha.replicas``. CRD installation,
 controllers, bootstrap registration, and the shared-root reference are derived
 from those settings. The existing SPIRE/ztunnel enablement and the platform
 prerequisites below still apply.
@@ -104,65 +104,59 @@ per ServiceAccount in enrolled namespaces, including unused ServiceAccounts.
 Each workload entry has exactly the namespace and ServiceAccount selectors;
 registration does not enumerate Pods. Each server runs a colocated
 ``spire-controller-manager`` that reconciles those resources into its own
-server over a pod-local private API socket. There is no leader election, shared
-SQLite database, or publisher component. The chart also supplies bootstrap
-``ClusterStaticEntry`` resources. The default
-``encryption.ztunnel.spire.bootstrapProfile=legacy`` retains the SPIRE agent
-node alias, Cilium agent, Cilium operator, and ztunnel. Keeping these identities
-preserves other consumers of the SPIRE integration and the direct Entry API
-backend.
+server over a pod-local private API socket. SCM does not use leader election,
+a shared SQLite database, or a publisher component. The Cilium operator does
+use its existing elected-leader lifecycle: it establishes the required CRD,
+then verifies or creates exactly two bootstrap ``ClusterStaticEntry`` resources
+before enabling workload registration. These are the SPIRE agent node alias
+and ztunnel, not the optional Cilium-agent and operator identities.
 
-For a ztunnel-only CRD deployment, explicitly select
-``encryption.ztunnel.spire.bootstrapProfile=ztunnel``. This supplies only the
-SPIRE agent node alias and ztunnel. It does not collapse all workloads into one
-custom resource: there are still two bootstrap entries plus one entry per
-enrolled namespace/ServiceAccount pair. Do not select this profile if another
-consumer needs the Cilium-agent delegated identity or the operator Entry API
-identity. The chart cannot infer that absence from ``useCRD`` alone, so the
-minimal profile is opt-in and rejected without CRD registration. Existing
-socket mounts and shared authorization settings are retained; selecting the
-profile alone does not restart unrelated components.
+HA is opt-in and defaults to disabled. Do not enable it for other consumers
+that still need the optional identities without providing those registrations
+separately. There are two bootstrap entries plus one entry per enrolled
+namespace/ServiceAccount pair, not one shared workload identity. Existing
+socket mounts and shared authorization settings are retained. The non-HA
+Entry API backend and its bootstrap sidecar are unchanged.
 
-The ztunnel profile derives the workload parent from the SPIRE agent alias,
+HA derives the workload parent from the SPIRE agent alias,
 ``spiffe://<trust-domain>/ns/<install.namespace>/sa/<install.agent.serviceAccount.name>``.
 An explicit different parent is rejected. The ztunnel identity itself is also
-parented to that alias. The legacy profile keeps the historical ``/ztunnel``
-workload parent unless overridden.
+parented to that alias. The non-HA backend keeps its historical ``/ztunnel``
+workload parent.
 
-For an existing, externally configured SPIRE installation, the CRD backend can
-override the workload parent and controller class without changing its legacy
-defaults. Use the shared Helm values:
+The controller class and optional explicit parent use the shared Helm values:
 
 .. code-block:: yaml
 
    encryption:
      ztunnel:
        spire:
-         useCRD: true
-         bootstrapProfile: ztunnel
          parentID: spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent
          className: cilium-spire
+   authentication:
+     mutual:
+       spire:
+         ha:
+           enabled: true
+           replicas: 2
 
-Parent and class overrides require ``encryption.ztunnel.spire.useCRD=true``.
-The parent must be a valid
-SPIFFE ID with a nonempty path in the configured trust domain. Without the
-override, the legacy profile's parent remains ``spiffe://<trust-domain>/ztunnel``.
-New entries
+Parent and class overrides require ``authentication.mutual.spire.ha.enabled=true``.
+The parent must equal the agent alias in the configured trust domain. New entries
 omit ``className`` by default; an explicit class is written to each owned entry.
 The Entry API backend is unchanged. For chart-managed SPIRE, ``className``
 also applies to bootstrap entries and the controller, and a nonempty class
 sets ``watchClassless=false``. External SPIRE must be configured to match.
-The underlying ``--mesh-auth-spire-crd-parent-id`` and
-``--mesh-auth-spire-crd-class`` binary flags retain their historical defaults.
-Raw ``operator.extraArgs`` overrides remain supported for an unstructured
-external legacy-profile configuration, but cannot override managed or
-structured Helm values. A parent override does not itself grant permission to
-issue identities; retain the corresponding node-alias and delegation chain.
+The chart supplies ``--mesh-auth-spire-ha``, an exact two-entry JSON bootstrap
+configuration, and the parent/class flags to the operator. Raw backend,
+bootstrap, parent and class flags in ``operator.extraArgs`` are rejected so
+they cannot contradict the public values. A parent override does not itself
+grant permission to issue identities; retain the corresponding node-alias and
+delegation chain.
 
 The controller reconciles only ``ClusterStaticEntry`` resources. It does not
 require the ``ClusterSPIFFEID`` or ``ClusterFederatedTrustDomain`` CRDs. Admission
 webhooks are disabled with ``ENABLE_WEBHOOKS=false``; no webhook resources or
-webhook RBAC are installed. Kubernetes still enforces the bundled CRD's OpenAPI
+webhook RBAC are installed. Kubernetes still enforces the embedded CRD's OpenAPI
 schema. Controller logs and resource status report semantic registration
 failures that the schema cannot detect.
 
@@ -178,19 +172,26 @@ Single-server CRD registration
 ------------------------------
 
 CRD registration does not require redundancy. Enable
-``encryption.ztunnel.spire.useCRD=true``, leave
-``authentication.mutual.spire.install.server.replicas=1``, and keep
+``authentication.mutual.spire.ha.enabled=true``, set
+``authentication.mutual.spire.ha.replicas=1``, and keep
 ``server.dataStorage.enabled=true`` for a persistent single server. The bundled
-CRD is installed automatically on a new release. A persistent single server
+CRD is installed by the elected operator if missing. A persistent single server
 keeps its own CA and does not require a new upstream root Secret unless
 ``server.ca.upstreamSecret`` is explicitly set. For an existing release, follow
-the CRD installation and trust migration requirements below.
+the ownership handoff and trust migration requirements below.
 
 Multiple SPIRE servers
 ----------------------
 
-``authentication.mutual.spire.install.server.replicas`` controls the number of
-SPIRE server/controller pairs, not database replicas. Each server gets its own
+``authentication.mutual.spire.ha.replicas`` controls the number of
+SPIRE server/controller pairs, not database replicas. When HA is enabled,
+omitting it selects two pairs. Explicit values must be integers from 1 through
+2147483647; strings, booleans, fractions, null and out-of-range values are
+rejected. When HA is disabled, any explicit ``ha.replicas`` value is an error,
+even if SPIRE installation itself is disabled. The default values intentionally
+omit this key. Non-HA installation remains a single server.
+
+Each server gets its own
 PVC by default. SQLite data is not replicated between servers; their controllers
 reconcile the same CRD registration intent into independent stores.
 
@@ -235,7 +236,7 @@ cluster using:
 .. code-block:: shell-session
 
     helm template cilium ./install/kubernetes/cilium --namespace kube-system \
-      --include-crds --values ./examples/kubernetes-ztunnel/spire-ha.yaml
+      --values ./examples/kubernetes-ztunnel/spire-ha.yaml
 
 The StatefulSet creates claims such as ``spire-data-spire-server-0`` and
 ``spire-data-spire-server-1``. Each stores that server's SQLite database and disk
@@ -269,40 +270,32 @@ This is not the default and is not selected when the replica count changes.
 CRD ownership and upgrades
 --------------------------
 
-The ``spire-crds`` subchart bundles the upstream controller-manager
-v0.6.2 ``ClusterStaticEntry`` schema. Its schema and the controller image must
-remain compatible. SPIRE server and agent images remain pinned to 1.15.3.
+The operator embeds the upstream controller-manager v0.6.2
+``ClusterStaticEntry`` schema. HA startup creates it if missing, waits for its
+``Established`` condition, and rejects name conflicts, deletion and schema
+differences. An existing matching schema is read without adopting or updating
+it. Schema upgrades require a separate compatibility review. The Set, Pod and
+federation CRDs are not required and are not installed or deleted.
+SPIRE server and agent images remain pinned to 1.15.3.
 
-By default, the dependency follows ``encryption.ztunnel.spire.useCRD``.
-``authentication.mutual.spire.install.crds.enabled`` is an optional boolean
-override: ``false`` opts out for an externally managed schema, and ``true``
-explicitly enables schema installation even without bundled SPIRE. Leave the
-override absent for automatic behavior. This dependency is evaluated before
-Helm renders templates, so it also applies when SPIRE itself is external.
+This SPIRE-specific startup is independent of ``--skip-crd-creation``. That
+flag still protects the general Cilium CRD installer, including deployments
+whose live Cilium schemas are newer than the operator source. Enabling HA does
+not turn general Cilium CRD creation back on.
 
-Helm installs files under ``crds/`` only during an initial install. It skips
-existing CRDs without adopting or updating them, and does not delete them on
-uninstall. Enabling the dependency while upgrading an existing Cilium release
-does **not** install a missing CRD. Install it first, for example from this
-checkout:
+The chart no longer installs CRDs or bootstrap CSEs. A missing CSE CRD is
+handled on either installation or upgrade, without Helm API-capability
+overrides. The leader checks both bootstrap objects before creating missing
+ones. Existing objects must have the exact expected specs and
+``app.kubernetes.io/managed-by=cilium-operator-spire-bootstrap``, with no Helm
+ownership annotations or owner references. Matching objects are not updated;
+UIDs, status, finalizers and unrelated metadata survive repeated leader
+startups. Conflicts and RBAC failures fail startup explicitly. Known transient
+API failures and creation races are retried within bounded startup waits.
+Readiness here means persisted bootstrap intent, not convergence in every
+SPIRE store.
 
-.. code-block:: shell-session
-
-    helm install cilium-spire-crds ./install/kubernetes/cilium/charts/spire-crds \
-      --namespace kube-system
-
-Then upgrade Cilium with ``authentication.mutual.spire.install.crds.enabled=false``
-and CRD registration enabled. If another installation owns the CRD, retain that
-ownership and arrange compatible schema upgrades with its owner instead. Do
-not delete a CRD to resolve an ownership or version mismatch: deletion removes
-all instances, including workload registration intent.
-
-Offline rendering against an existing CRD requires
-``--api-versions spire.spiffe.io/v1alpha1/ClusterStaticEntry``. This option only
-supplies rendering capabilities; it is not evidence that a cluster has the CRD.
-
-Bootstrap resources belong to this Helm release and use release-qualified
-names. Operator-created ServiceAccount resources remain owned by
+Operator-created ServiceAccount resources remain owned by
 ``cilium-operator-ztunnel`` and are not Helm-managed. The default controller
 watches classless resources and manages only SPIRE entry IDs prefixed with
 ``cilium.``. A nonempty ``encryption.ztunnel.spire.className`` scopes the
@@ -318,7 +311,16 @@ cannot establish that migration, so preserve their class/prefix explicitly.
 It does not adopt or garbage-collect existing direct-API registrations.
 Avoid sharing these classless resources between unrelated trust domains.
 
-The chart rejects obsolete Set/ServiceAccount-template values and bootstrap
+The new keys are authoritative, with no legacy aliases or precedence rules.
+Remove ``encryption.ztunnel.spire.useCRD``,
+``encryption.ztunnel.spire.bootstrapProfile``,
+``authentication.mutual.spire.install.server.replicas`` and
+``authentication.mutual.spire.install.crds`` from supplied values, including
+stale disabled values. Replace the first and third with ``ha.enabled`` and
+``ha.replicas``. HA always ensures the two required bootstrap identities.
+The old ``--enable-ztunnel-spiffeid-crd`` binary flag is removed.
+
+The chart also rejects obsolete Set/ServiceAccount-template values and bootstrap
 producer arguments instead of silently ignoring them. Remove
 ``useSPIFFEIDSet``, ``spiffeIDSet``, ``useServiceAccountSPIFFEID`` and
 ``workloadSelectorTemplates`` from ``encryption.ztunnel.spire`` when migrating;
@@ -329,7 +331,9 @@ When RBAC or ServiceAccounts are managed externally, supply the equivalent
 permissions and accounts yourself. The server needs PSAT token reviews and
 pod/node reads, bundle ConfigMap access, and CRD get/list/watch plus status
 updates. The operator needs its existing ClusterStaticEntry producer
-permissions. No component needs Kubernetes API permission to read the root
+permissions and CRD get/create permission. The operator's existing general CRD
+RBAC already supplies get/create; HA does not add schema update or delete
+permission. No component needs Kubernetes API permission to read the root
 Secret; Kubernetes mounts it into the server.
 
 Migration and verification
@@ -348,8 +352,16 @@ operation, not a replica-count-only upgrade:
   On a connected upgrade, the chart reads only the existing StatefulSet's
   root reference and rejects an automatic root transition. It never reads
   Secret contents. Offline rendering cannot verify the previous root.
-* Install the CRD before switching the operator to CRD registration. Explicitly
-  migrate or retire corresponding old Entry API registrations; the controller
+* Before removing Helm-owned bootstraps from an existing release, record
+  ``helm.sh/resource-policy: keep`` in both the stored release manifest and
+  live objects using a retention-only forward upgrade. Verify the actual Helm
+  version's retention behavior. Next remove the resources from the manifest
+  while retaining their UIDs/specs, then transfer only their ownership metadata
+  with UID/resourceVersion preconditions. Finally start the new operator with
+  the exact retained names/specs. A live-only ownership-label change is not a
+  substitute for this handoff. Do not delete the CRD or bootstrap entries,
+  force ownership, edit release Secrets, or roll back to stale producer values.
+* Explicitly migrate or retire corresponding old Entry API registrations; the controller
   deliberately leaves unprefixed entries alone. Other direct-API producers
   must not rely on writes reaching every independent server.
 * The PVC default applies at every replica count. Changing
@@ -389,15 +401,14 @@ External SPIRE
 --------------
 
 With ``authentication.mutual.spire.install.enabled=false``, the chart does not
-install servers, agents, controllers, or bootstrap registrations.
-``encryption.ztunnel.spire.useCRD=true`` still selects the operator's
-ClusterStaticEntry producer and its RBAC, and enables the CRD dependency.
-Explicitly set ``authentication.mutual.spire.install.crds.enabled=false`` when
-CRD installation is also managed externally. Existing CRDs are never adopted,
-updated, or deleted by Helm, regardless of this override.
+install servers, agents or controllers. ``authentication.mutual.spire.ha.enabled=true``
+still enables operator-owned CRD/bootstrap startup and workload production.
+Configure ``install.namespace`` and ``install.agent.serviceAccount.name`` to
+describe the external SPIRE agent alias. Do not supply ``ha.replicas`` for
+external servers: the chart rejects a count it cannot apply.
 
-The external installation must provide a compatible controller, PSAT and
-bootstrap registration, delegated identity authorization, shared trust and
+The external installation must provide a compatible Static-only controller,
+matching PSAT selectors, delegated identity authorization, shared trust and
 appropriate routing. Existing ``encryption.ztunnel.extraEnv``, ``extraVolumes``
 and ``extraVolumeMounts`` wiring is retained. When moving to chart-managed
 SPIRE, remove manually supplied ``SPIRE_ENABLED``,
@@ -442,7 +453,7 @@ This will:
 #. Remove the iptables rules from each pod's network namespace
 #. Notify ztunnel to stop processing traffic for those workloads
 
-When ``encryption.ztunnel.spire.useCRD=true``, each managed ``ClusterStaticEntry``
+When ``authentication.mutual.spire.ha.enabled=true``, each managed ``ClusterStaticEntry``
 has a ``spire.cilium.io/namespace`` label for namespace-scoped queries. Its
 ``spire.cilium.io/service-account`` annotation still holds the full
 ``namespace/serviceaccount`` identity. Only

@@ -8,7 +8,50 @@ operator watches enrolled Namespaces and ServiceAccounts and writes one
 ``ClusterStaticEntry`` per namespace/SA pair, including unused SAs. It does
 not enumerate Pods to produce those identities.
 
-The only runtime compatibility additions are optional CRD-backend flags:
+Operator-owned HA contract
+--------------------------
+
+The current public controls are ``authentication.mutual.spire.ha.enabled`` and
+``authentication.mutual.spire.ha.replicas``. Enabled mode defaults to two paired
+SPIRE-server/SCM replicas. Explicit replica values must be integers from 1
+through 2147483647 and are rejected when HA is disabled or SPIRE servers are
+external. The disabled default omits the replicas key and preserves the
+single-server Entry API backend.
+
+The elected operator establishes the embedded ClusterStaticEntry CRD, then
+verifies or creates exactly the SPIRE agent alias and ztunnel CSEs before
+releasing workload reconciliation. Matching existing schemas and entries are
+read without rewriting them. Ownership or spec conflicts fail startup.
+The SPIRE installer is independent of ``--skip-crd-creation``; keep that flag
+enabled in this POC so older Cilium source cannot replace newer Cilium schemas.
+
+The chart supplies an exact two-entry JSON bootstrap configuration through
+``--mesh-auth-spire-bootstrap-entries``. General-chart names and its three
+PSAT selectors remain distinct from the POC's retained names and two selectors.
+The frozen POC handoff must supply its actual names/specs, not regenerate them
+from the general chart. Bootstrap ownership is
+``cilium-operator-spire-bootstrap``, separate from
+``cilium-operator-ztunnel`` workload ownership and pruning.
+
+Legacy ``useCRD``, ``bootstrapProfile``, ``install.server.replicas`` and
+``install.crds`` values are rejected even when disabled. Remove them and use
+the new HA keys. There are no aliases or conflicting enable switches.
+The old ``--enable-ztunnel-spiffeid-crd`` flag is removed. Parent/class values
+remain supported, with the HA workload parent required to equal the agent alias.
+
+For the Helm-to-operator transfer, first record ``helm.sh/resource-policy: keep``
+in both stored and live bootstrap manifests with a retention-only upgrade.
+Then remove the two CSEs from Helm's manifest without deleting them, transfer
+only guarded ownership metadata, and roll the operator with their exact specs.
+Verify UID/spec and complete registration preservation at every stage.
+Never rely only on a live ownership-label change, edit release Secrets, delete
+the CSE CRD, or replay the four-bootstrap historical restoration below.
+Any recovery is a bounded forward transaction against the actual latest state.
+
+Historical restoration
+-----------------------
+
+The original restoration used these optional CRD-backend flags:
 
 .. code-block:: text
 
@@ -22,8 +65,8 @@ on new entries. The direct Entry API backend is unchanged. Ownership and
 namespace-scoped pruning remain enforced by the original producer label,
 namespace label and full namespace/SA identity annotation.
 
-Current verified POC
---------------------
+Pre-change verified POC
+-----------------------
 
 As verified on November 10, 2026, release ``cilium`` in ``kube-system`` is
 deployed at revision **7**, using the frozen compatibility chart
@@ -57,8 +100,12 @@ APK/gops installer downloads. Label the image with its exact clean source commit
 and save its full index, amd64 manifest and config-digest chain in an offline
 archive. Do not publish it.
 
-Minimal bootstrap contract
---------------------------
+Revision-7 minimal bootstrap contract
+-------------------------------------
+
+The settings in this section describe the retained revision-7 release only.
+They are rejected by the current chart and must be explicitly migrated to the
+operator-owned HA contract above.
 
 The explicit Helm setting ``encryption.ztunnel.spire.bootstrapProfile=ztunnel``
 requires ``encryption.ztunnel.spire.useCRD=true`` and selects exactly the

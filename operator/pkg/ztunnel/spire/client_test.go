@@ -11,6 +11,9 @@ import (
 	"github.com/cilium/hive/hivetest"
 	"github.com/spiffe/spire-api-sdk/proto/spire/api/types"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
 
 	ztunnel "github.com/cilium/cilium/operator/pkg/ztunnel/config"
@@ -48,7 +51,10 @@ func TestClientBackendWiring(t *testing.T) {
 			)
 			h.Viper().Set("ztunnel-ca-type", string(tt.caType))
 			h.Viper().Set("enable-ztunnel", tt.ztunnel)
-			h.Viper().Set("enable-ztunnel-spiffeid-crd", tt.crd)
+			h.Viper().Set("mesh-auth-spire-ha", tt.crd)
+			if tt.crd {
+				h.Viper().Set("mesh-auth-spire-bootstrap-entries", testBootstrapConfig(t, "test.cilium", "").BootstrapEntries)
+			}
 			h.Viper().Set("mesh-auth-spiffe-trust-domain", "test.cilium")
 			err := h.Populate(log)
 			if tt.wantErr {
@@ -74,6 +80,9 @@ func TestClientBackendWiring(t *testing.T) {
 				require.True(t, ok)
 				require.Equal(t, "test.cilium", crd.trustDomain)
 				entryCfg = crd.entryCfg
+				crd.client = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()).Resource(clusterStaticEntryGVR)
+				_, err := crd.crds.Create(t.Context(), establishedCRD(t), metav1.CreateOptions{})
+				require.NoError(t, err)
 				require.NoError(t, h.Start(log, t.Context()))
 				select {
 				case <-registration.Initialized():
@@ -91,7 +100,11 @@ func TestClientBackendWiring(t *testing.T) {
 				require.Equal(t, wantCfg, direct.cfg)
 				entryCfg = direct.entryCfg
 			}
-			require.Equal(t, DefaultSpireEntryConfig().entry("test.cilium", "shop/checkout"), entryCfg.entry("test.cilium", "shop/checkout"))
+			want := DefaultSpireEntryConfig()
+			if tt.crd {
+				want.ParentID = "/ns/cilium-spire/sa/spire-agent"
+			}
+			require.Equal(t, want.entry("test.cilium", "shop/checkout"), entryCfg.entry("test.cilium", "shop/checkout"))
 		})
 	}
 }
@@ -120,8 +133,7 @@ func (c clientsetWithRestConfig) RestConfig() *rest.Config {
 func TestCRDClientConstructionErrors(t *testing.T) {
 	log := hivetest.Logger(t)
 	fake, cs := k8sClient.NewFakeClientset(log)
-	cfg := defaultClientConfig
-	cfg.UseCRD = true
+	cfg := testBootstrapConfig(t, "spiffe.cilium", "")
 	p := params{
 		Logger: log, Lifecycle: &cell.DefaultLifecycle{},
 		ClientConfig: cfg, EntryConfig: DefaultSpireEntryConfig(),
@@ -158,7 +170,8 @@ func TestCRDClientRegistrationOverrides(t *testing.T) {
 	)
 	h.Viper().Set("enable-ztunnel", true)
 	h.Viper().Set("ztunnel-ca-type", "spire")
-	h.Viper().Set("enable-ztunnel-spiffeid-crd", true)
+	h.Viper().Set("mesh-auth-spire-ha", true)
+	h.Viper().Set("mesh-auth-spire-bootstrap-entries", testBootstrapConfig(t, "spiffe.cilium", "cilium-spire").BootstrapEntries)
 	h.Viper().Set("mesh-auth-spiffe-trust-domain", "spiffe.cilium")
 	h.Viper().Set("mesh-auth-spire-crd-parent-id", "spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent")
 	h.Viper().Set("mesh-auth-spire-crd-class", "cilium-spire")
@@ -190,16 +203,20 @@ func TestCRDClientRejectsInvalidOverrides(t *testing.T) {
 		name, parent, class, want string
 		crd                       bool
 	}{
-		{name: "parent without CRD", parent: "spiffe://spiffe.cilium/parent", want: "require enable-ztunnel-spiffeid-crd"},
-		{name: "class without CRD", class: "cilium-spire", want: "require enable-ztunnel-spiffeid-crd"},
+		{name: "parent without CRD", parent: "spiffe://spiffe.cilium/parent", want: "require mesh-auth-spire-ha"},
+		{name: "class without CRD", class: "cilium-spire", want: "require mesh-auth-spire-ha"},
 		{name: "relative parent", crd: true, parent: "/parent", want: "invalid SPIRE CRD parent ID"},
 		{name: "foreign parent", crd: true, parent: "spiffe://other.test/parent", want: "must have a path in trust domain"},
 		{name: "empty parent path", crd: true, parent: "spiffe://spiffe.cilium", want: "must have a path in trust domain"},
 		{name: "blank class", crd: true, class: " \t", want: "class must not be blank"},
+		{name: "non-alias parent", crd: true, parent: "spiffe://spiffe.cilium/ztunnel", want: "must match the SPIRE agent bootstrap alias"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := defaultClientConfig
-			cfg.UseCRD, cfg.CRDParentID, cfg.CRDClassName = tt.crd, tt.parent, tt.class
+			cfg.HAEnabled, cfg.CRDParentID, cfg.CRDClassName = tt.crd, tt.parent, tt.class
+			if tt.crd {
+				cfg.BootstrapEntries = testBootstrapConfig(t, "spiffe.cilium", tt.class).BootstrapEntries
+			}
 			registration, err := NewClient(params{
 				Logger: log, K8sClient: cs, Lifecycle: &cell.DefaultLifecycle{},
 				ClientConfig: cfg, EntryConfig: DefaultSpireEntryConfig(),

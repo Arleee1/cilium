@@ -17,8 +17,8 @@ import (
 
 const (
 	ztunnelSpireValues = "encryption.enabled=true,encryption.type=ztunnel,encryption.ztunnel.ca.type=spire,authentication.mutual.spire.enabled=true,authentication.mutual.spire.install.enabled=false"
-	ztunnelSpireCRD    = "encryption.ztunnel.spire.useCRD=true"
-	ztunnelSpireFlag   = "--enable-ztunnel-spiffeid-crd"
+	ztunnelSpireHA     = "authentication.mutual.spire.ha.enabled=true"
+	ztunnelSpireFlag   = "--mesh-auth-spire-ha"
 )
 
 func renderZtunnelSpire(t *testing.T, overrides ...string) (map[string]string, error) {
@@ -47,7 +47,7 @@ func TestZtunnelSpireCRDRendering(t *testing.T) {
 		},
 		{
 			name:   "Entry API external SPIRE explicit",
-			values: []string{ztunnelSpireValues, "encryption.ztunnel.spire.useCRD=false"},
+			values: []string{ztunnelSpireValues, "authentication.mutual.spire.ha.enabled=false"},
 		},
 		{
 			name:      "Entry API chart-managed SPIRE",
@@ -56,31 +56,24 @@ func TestZtunnelSpireCRDRendering(t *testing.T) {
 		},
 		{
 			name:    "CRD external SPIRE",
-			values:  []string{ztunnelSpireValues, ztunnelSpireCRD},
+			values:  []string{ztunnelSpireValues, ztunnelSpireHA},
 			wantCRD: true,
 		},
 		{
 			name:      "CRD chart-managed SPIRE",
-			values:    []string{ztunnelSpireValues, ztunnelSpireCRD, "authentication.mutual.spire.install.enabled=true"},
+			values:    []string{ztunnelSpireValues, ztunnelSpireHA, "authentication.mutual.spire.install.enabled=true"},
 			wantCRD:   true,
 			wantSPIRE: true,
 		},
 		{
-			name:       "operator disabled",
-			values:     []string{ztunnelSpireValues, ztunnelSpireCRD, "operator.enabled=false"},
-			wantCRD:    true,
-			noOperator: true,
-			noRole:     true,
-		},
-		{
 			name:    "externally managed RBAC",
-			values:  []string{ztunnelSpireValues, ztunnelSpireCRD, "rbac.create=false"},
+			values:  []string{ztunnelSpireValues, ztunnelSpireHA, "rbac.create=false"},
 			wantCRD: true,
 			noRole:  true,
 		},
 		{
 			name:    "externally managed operator ServiceAccount",
-			values:  []string{ztunnelSpireValues, ztunnelSpireCRD, "serviceAccounts.operator.create=false"},
+			values:  []string{ztunnelSpireValues, ztunnelSpireHA, "serviceAccounts.operator.create=false"},
 			wantCRD: true,
 			noRole:  true,
 		},
@@ -91,18 +84,9 @@ func TestZtunnelSpireCRDRendering(t *testing.T) {
 		},
 		{
 			name:      "unrelated CRD arguments",
-			values:    []string{ztunnelSpireValues, ztunnelSpireCRD},
+			values:    []string{ztunnelSpireValues, ztunnelSpireHA},
 			wantCRD:   true,
 			extraArgs: []string{"--log-level=debug", "--leader-election-lease-duration=30s"},
-		},
-		{
-			name:    "external CRD parent and class",
-			values:  []string{ztunnelSpireValues, ztunnelSpireCRD},
-			wantCRD: true,
-			extraArgs: []string{
-				"--mesh-auth-spire-crd-parent-id=spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent",
-				"--mesh-auth-spire-crd-class=cilium-spire",
-			},
 		},
 	}
 	for _, tt := range tests {
@@ -124,7 +108,10 @@ func TestZtunnelSpireCRDRendering(t *testing.T) {
 				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 				args := []string{"--config-dir=/tmp/cilium/config-map", "--debug=$(CILIUM_DEBUG)"}
 				if tt.wantCRD {
-					args = append(args, ztunnelSpireFlag+"=true")
+					actual := deployment.Spec.Template.Spec.Containers[0].Args
+					require.Len(t, spireBootstrapEntries(t, rendered), 2)
+					args = append(args, ztunnelSpireFlag+"=true", actual[3],
+						"--mesh-auth-spire-crd-parent-id=spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent")
 				}
 				require.Equal(t, append(args, tt.extraArgs...), deployment.Spec.Template.Spec.Containers[0].Args)
 			}
@@ -171,16 +158,17 @@ func TestZtunnelSpireCRDValidation(t *testing.T) {
 		"encryption.type=wireguard",
 		"encryption.ztunnel.ca.type=internal",
 		"authentication.mutual.spire.enabled=false",
+		"operator.enabled=false",
 	} {
 		t.Run(override, func(t *testing.T) {
-			_, err := renderZtunnelSpire(t, ztunnelSpireValues, ztunnelSpireCRD, override)
-			require.ErrorContains(t, err, "encryption.ztunnel.spire.useCRD=true requires encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true")
+			_, err := renderZtunnelSpire(t, ztunnelSpireValues, ztunnelSpireHA, override)
+			require.ErrorContains(t, err, "authentication.mutual.spire.ha.enabled=true requires operator.enabled=true, encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true")
 		})
 	}
 	for _, value := range []string{"enabled", "1"} {
 		t.Run("non-boolean "+value, func(t *testing.T) {
-			_, err := renderZtunnelSpire(t, ztunnelSpireValues, "encryption.ztunnel.spire.useCRD="+value)
-			require.ErrorContains(t, err, "useCRD")
+			_, err := renderZtunnelSpire(t, ztunnelSpireValues, "authentication.mutual.spire.ha.enabled="+value)
+			require.ErrorContains(t, err, "enabled")
 			require.ErrorContains(t, err, "boolean")
 		})
 	}
@@ -188,20 +176,20 @@ func TestZtunnelSpireCRDValidation(t *testing.T) {
 
 func TestZtunnelSpireCRDExtraArgs(t *testing.T) {
 	for _, useCRD := range []bool{false, true} {
-		for _, arg := range []string{ztunnelSpireFlag, ztunnelSpireFlag + "=true", ztunnelSpireFlag + "=false", ztunnelSpireFlag + "=1"} {
+		for _, arg := range []string{ztunnelSpireFlag, ztunnelSpireFlag + "=true", ztunnelSpireFlag + "=false", ztunnelSpireFlag + "=1", "--enable-ztunnel-spiffeid-crd=false", "--mesh-auth-spire-bootstrap-entries=[]"} {
 			t.Run(fmt.Sprintf("useCRD=%t/%s", useCRD, arg), func(t *testing.T) {
 				_, err := renderZtunnelSpire(t,
 					ztunnelSpireValues,
-					fmt.Sprintf("encryption.ztunnel.spire.useCRD=%t", useCRD),
+					fmt.Sprintf("authentication.mutual.spire.ha.enabled=%t", useCRD),
 					"operator.extraArgs[0]=--log-level=debug",
 					"operator.extraArgs[1]="+arg,
 				)
-				require.ErrorContains(t, err, "Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use encryption.ztunnel.spire.useCRD instead")
+				require.ErrorContains(t, err, "Remove SPIRE HA/backend/bootstrap flags from operator.extraArgs and use authentication.mutual.spire.ha.enabled instead")
 			})
 		}
 	}
 	t.Run("raw flag without SPIRE configuration", func(t *testing.T) {
 		_, err := renderZtunnelSpire(t, "operator.extraArgs[0]="+ztunnelSpireFlag)
-		require.ErrorContains(t, err, "Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use encryption.ztunnel.spire.useCRD instead")
+		require.ErrorContains(t, err, "Remove SPIRE HA/backend/bootstrap flags from operator.extraArgs and use authentication.mutual.spire.ha.enabled instead")
 	})
 }

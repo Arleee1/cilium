@@ -1,4 +1,4 @@
-{{- if and .Values.authentication.mutual.spire.enabled .Values.authentication.mutual.spire.install.enabled .Values.encryption.ztunnel.spire.useCRD -}}
+{{- if and .Values.authentication.mutual.spire.enabled .Values.authentication.mutual.spire.install.enabled .Values.authentication.mutual.spire.ha.enabled -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

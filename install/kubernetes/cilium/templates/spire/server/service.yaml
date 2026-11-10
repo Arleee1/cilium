@@ -22,7 +22,7 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.authentication.mutual.spire.install.server.service.type }}
-  {{- if gt (int .Values.authentication.mutual.spire.install.server.replicas) 1 }}
+  {{- if gt (int64 (include "cilium.spire.replicas" .)) 1 }}
   sessionAffinity: ClientIP
   {{- end }}
   ports:

@@ -1,5 +1,6 @@
 {{- if and .Values.authentication.mutual.spire.enabled .Values.authentication.mutual.spire.install.enabled -}}
-{{- $useCRD := .Values.encryption.ztunnel.spire.useCRD -}}
+{{- $useCRD := .Values.authentication.mutual.spire.ha.enabled -}}
+{{- $replicas := include "cilium.spire.replicas" . | int64 -}}
 {{- $server := .Values.authentication.mutual.spire.install.server -}}
 {{- $upstreamSecret := include "cilium.spire.upstreamSecret" . -}}
 {{- $podSecurityContext := $server.podSecurityContext -}}
@@ -31,7 +32,7 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
-  replicas: {{ $server.replicas }}
+  replicas: {{ $replicas }}
   selector:
     matchLabels:
       app: spire-server
@@ -179,7 +180,7 @@ spec:
       {{- if $server.affinity }}
       affinity:
         {{- toYaml $server.affinity | nindent 8 }}
-      {{- else if gt (int $server.replicas) 1 }}
+      {{- else if gt $replicas 1 }}
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

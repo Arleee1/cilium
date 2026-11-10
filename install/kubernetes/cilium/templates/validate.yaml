@@ -137,16 +137,26 @@
 
 {{/* validate Cilium operator */}}
 {{- $spire := .Values.encryption.ztunnel.spire }}
+{{- $ha := .Values.authentication.mutual.spire.ha }}
+{{- $replicas := include "cilium.spire.replicas" . | int64 }}
+{{- range $key := list "useCRD" "bootstrapProfile" }}
+  {{- if hasKey $spire $key }}
+    {{ fail (printf "Remove legacy encryption.ztunnel.spire.%s; use authentication.mutual.spire.ha.enabled. HA installs exactly the agent alias and ztunnel bootstraps." $key) }}
+  {{- end }}
+{{- end }}
+{{- if hasKey .Values.authentication.mutual.spire.install.server "replicas" }}
+  {{ fail "Remove legacy authentication.mutual.spire.install.server.replicas; use authentication.mutual.spire.ha.replicas only with ha.enabled=true." }}
+{{- end }}
+{{- if hasKey .Values.authentication.mutual.spire.install "crds" }}
+  {{ fail "Remove legacy authentication.mutual.spire.install.crds; the elected Cilium operator installs the required CRD when ha.enabled=true." }}
+{{- end }}
 {{- range $key := list "useSPIFFEIDSet" "spiffeIDSet" "useServiceAccountSPIFFEID" "workloadSelectorTemplates" }}
   {{- if hasKey $spire $key }}
     {{ fail (printf "Remove obsolete encryption.ztunnel.spire.%s values; this chart supports literal per-ServiceAccount ClusterStaticEntries, not Set or Pod enrollment." $key) }}
   {{- end }}
 {{- end }}
-{{- if not (has $spire.bootstrapProfile (list "legacy" "ztunnel")) }}
-  {{ fail "encryption.ztunnel.spire.bootstrapProfile must be legacy or ztunnel." }}
-{{- end }}
-{{- if and (not $spire.useCRD) (or (ne $spire.bootstrapProfile "legacy") $spire.parentID $spire.className) }}
-  {{ fail "The ztunnel bootstrap profile, parentID and className require encryption.ztunnel.spire.useCRD=true." }}
+{{- if and (not $ha.enabled) (or $spire.parentID $spire.className) }}
+  {{ fail "SPIRE parentID and className require authentication.mutual.spire.ha.enabled=true." }}
 {{- end }}
 {{- if or (not (kindIs "string" $spire.className)) (regexMatch "[[:space:]]" $spire.className) }}
   {{ fail "encryption.ztunnel.spire.className must be a string without whitespace." }}
@@ -158,8 +168,8 @@
   {{- if or (not (hasPrefix (printf "spiffe://%s/" .Values.authentication.mutual.spire.trustDomain) $spire.parentID)) (not (regexMatch "^spiffe://[^/]+(/[a-zA-Z0-9._-]+)+$" $spire.parentID)) (regexMatch "/\\.{1,2}(/|$)" $spire.parentID) }}
     {{ fail "encryption.ztunnel.spire.parentID must be a SPIFFE ID with a nonempty path in the configured trust domain." }}
   {{- end }}
-  {{- if and (eq $spire.bootstrapProfile "ztunnel") (ne $spire.parentID (include "cilium.spire.agentID" .)) }}
-    {{ fail "The ztunnel bootstrap profile requires the SPIRE agent alias as parentID." }}
+  {{- if ne $spire.parentID (include "cilium.spire.agentID" .) }}
+    {{ fail "SPIRE HA requires the SPIRE agent alias as parentID." }}
   {{- end }}
 {{- end }}
 {{- $prefix := .Values.authentication.mutual.spire.install.server.controllerManager.entryIDPrefix }}
@@ -167,34 +177,35 @@
   {{ fail "authentication.mutual.spire.install.server.controllerManager.entryIDPrefix must be a nonempty string without whitespace." }}
 {{- end }}
 {{- range .Values.operator.extraArgs }}
-  {{- if regexMatch "^--enable-ztunnel-spiffeid-crd($|=)" . }}
-    {{ fail "Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use encryption.ztunnel.spire.useCRD instead." }}
+  {{- if regexMatch "^--(enable-ztunnel-spiffeid-crd|mesh-auth-spire-ha|mesh-auth-spire-bootstrap-entries)($|=)" . }}
+    {{ fail "Remove SPIRE HA/backend/bootstrap flags from operator.extraArgs and use authentication.mutual.spire.ha.enabled instead." }}
   {{- end }}
   {{- if regexMatch "^--(enable-ztunnel-spiffeid-set-crd|mesh-auth-spire-spiffeid-set-spec|mesh-auth-spire-registration-[a-z-]+)($|=)" . }}
     {{ fail "Remove obsolete Set/bootstrap registration arguments from operator.extraArgs; use the static-entry profile." }}
   {{- end }}
   {{- if regexMatch "^--mesh-auth-spire-crd-(parent-id|class)($|=)" . }}
-    {{- if or (not $spire.useCRD) $.Values.authentication.mutual.spire.install.enabled (ne $spire.bootstrapProfile "legacy") $spire.parentID $spire.className }}
-      {{ fail "Use encryption.ztunnel.spire.parentID and className instead of operator.extraArgs for managed or structured CRD registration." }}
-    {{- end }}
+    {{ fail "Use encryption.ztunnel.spire.parentID and className instead of operator.extraArgs for HA registration." }}
   {{- end }}
 {{- end }}
-{{- if .Values.encryption.ztunnel.spire.useCRD }}
-  {{- if not (and .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") .Values.authentication.mutual.spire.enabled) }}
-    {{ fail "encryption.ztunnel.spire.useCRD=true requires encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true." }}
+{{- if $ha.enabled }}
+  {{- if not (and .Values.operator.enabled .Values.encryption.enabled (eq .Values.encryption.type "ztunnel") (eq .Values.encryption.ztunnel.ca.type "spire") .Values.authentication.mutual.spire.enabled) }}
+    {{ fail "authentication.mutual.spire.ha.enabled=true requires operator.enabled=true, encryption.enabled=true, encryption.type=ztunnel, encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true." }}
+  {{- end }}
+  {{- if and .Release.IsUpgrade (.Capabilities.APIVersions.Has "spire.spiffe.io/v1alpha1/ClusterStaticEntry") }}
+    {{- $existing := lookup "spire.spiffe.io/v1alpha1" "ClusterStaticEntry" "" "" }}
+    {{- range $entry := $existing.items }}
+      {{- $annotations := $entry.metadata.annotations | default dict }}
+      {{- if and (eq (get $annotations "meta.helm.sh/release-name") $.Release.Name) (eq (get $annotations "meta.helm.sh/release-namespace") $.Release.Namespace) }}
+        {{ fail "Helm-owned SPIRE bootstrap entries require a staged retention and operator ownership handoff before enabling HA. Do not remove them from the release without recording helm.sh/resource-policy=keep." }}
+      {{- end }}
+    {{- end }}
   {{- end }}
 {{- end }}
 
 {{/* validate chart-managed SPIRE */}}
 {{- if and .Values.authentication.mutual.spire.enabled .Values.authentication.mutual.spire.install.enabled }}
   {{- $server := .Values.authentication.mutual.spire.install.server }}
-  {{- if or (kindIs "string" $server.replicas) (not (regexMatch "^[1-9][0-9]*$" (toString $server.replicas))) (gt (int64 $server.replicas) 2147483647) }}
-    {{ fail "authentication.mutual.spire.install.server.replicas must be an integer between 1 and 2147483647." }}
-  {{- end }}
-  {{- if gt (int64 $server.replicas) 1 }}
-    {{- if not .Values.encryption.ztunnel.spire.useCRD }}
-      {{ fail "Multiple SPIRE servers require encryption.ztunnel.spire.useCRD=true; independent SQLite servers cannot share Entry API registration state." }}
-    {{- end }}
+  {{- if gt $replicas 1 }}
     {{- if ne $server.service.type "ClusterIP" }}
       {{ fail "Multiple SPIRE servers require authentication.mutual.spire.install.server.service.type=ClusterIP for ClientIP affinity." }}
     {{- end }}
@@ -216,7 +227,7 @@
       {{- end }}
     {{- end }}
   {{- end }}
-  {{- if .Values.encryption.ztunnel.spire.useCRD }}
+  {{- if $ha.enabled }}
     {{- if .Release.IsUpgrade }}
       {{- $existing := lookup "v1" "ConfigMap" .Values.authentication.mutual.spire.install.namespace "spire-controller-manager" }}
       {{- if $existing }}
@@ -227,17 +238,6 @@
         {{- if or (ne ($config.className | default "") $spire.className) (ne $config.entryIDPrefix $prefix) }}
           {{ fail "Changing the chart-managed SCM class or entryIDPrefix requires a planned registration migration; preserve the existing scope." }}
         {{- end }}
-      {{- end }}
-    {{- end }}
-    {{- $installCRDs := .Values.encryption.ztunnel.spire.useCRD }}
-    {{- if hasKey .Values.authentication.mutual.spire.install.crds "enabled" }}
-      {{- $installCRDs = .Values.authentication.mutual.spire.install.crds.enabled }}
-    {{- end }}
-    {{- if not (.Capabilities.APIVersions.Has "spire.spiffe.io/v1alpha1/ClusterStaticEntry") }}
-      {{- if .Release.IsUpgrade }}
-        {{ fail "Install the bundled spire-crds chart before upgrading an existing release to CRD-managed SPIRE. Helm does not install CRDs during upgrades." }}
-      {{- else if not $installCRDs }}
-        {{ fail "CRD-managed SPIRE requires the ClusterStaticEntry CRD. Remove the install.crds.enabled=false override for a new bundled installation; for an existing CRD, offline rendering requires --api-versions spire.spiffe.io/v1alpha1/ClusterStaticEntry." }}
       {{- end }}
     {{- end }}
   {{- end }}

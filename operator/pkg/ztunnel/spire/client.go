@@ -43,11 +43,11 @@ type ClientConfig struct {
 	SpireServerAddress           string        `mapstructure:"mesh-auth-spire-server-address"`
 	SpireServerConnectionTimeout time.Duration `mapstructure:"mesh-auth-spire-server-connection-timeout"`
 	SpiffeTrustDomain            string        `mapstructure:"mesh-auth-spiffe-trust-domain"`
-	// UseCRD creates one ClusterStaticEntry per enrolled ServiceAccount.
-	UseCRD bool `mapstructure:"enable-ztunnel-spiffeid-crd"`
-	// Empty CRD overrides retain the historical parent and class behavior.
-	CRDParentID  string `mapstructure:"mesh-auth-spire-crd-parent-id"`
-	CRDClassName string `mapstructure:"mesh-auth-spire-crd-class"`
+	// HAEnabled installs static registration intent for independent SPIRE stores.
+	HAEnabled        bool   `mapstructure:"mesh-auth-spire-ha"`
+	BootstrapEntries string `mapstructure:"mesh-auth-spire-bootstrap-entries"`
+	CRDParentID      string `mapstructure:"mesh-auth-spire-crd-parent-id"`
+	CRDClassName     string `mapstructure:"mesh-auth-spire-crd-class"`
 }
 
 var defaultClientConfig = ClientConfig{
@@ -71,11 +71,13 @@ func (cfg ClientConfig) Flags(flags *pflag.FlagSet) {
 	flags.String("mesh-auth-spiffe-trust-domain",
 		cfg.SpiffeTrustDomain,
 		"The trust domain for the SPIFFE identity.")
-	flags.Bool("enable-ztunnel-spiffeid-crd",
-		cfg.UseCRD,
-		"Register each ServiceAccount in an enrolled namespace using a ClusterStaticEntry instead of the SPIRE Entry API (requires ztunnel with the SPIRE CA).")
+	flags.Bool("mesh-auth-spire-ha",
+		cfg.HAEnabled,
+		"Install the SPIRE ClusterStaticEntry CRD and required bootstrap entries on elected-leader startup, then register enrolled ServiceAccounts using static entries (requires ztunnel with the SPIRE CA).")
+	flags.String("mesh-auth-spire-bootstrap-entries", cfg.BootstrapEntries,
+		"JSON array containing the two required bootstrap entries (name and spec): the SPIRE agent node alias and ztunnel. Required with mesh-auth-spire-ha.")
 	flags.String("mesh-auth-spire-crd-parent-id", cfg.CRDParentID,
-		"Optional parent SPIFFE ID for operator-produced ClusterStaticEntries in the configured trust domain; empty retains the default /ztunnel parent (requires the CRD backend).")
+		"Optional workload parent SPIFFE ID; must match the configured SPIRE agent bootstrap alias (requires mesh-auth-spire-ha).")
 	flags.String("mesh-auth-spire-crd-class", cfg.CRDClassName,
 		"Optional controller class for operator-produced ClusterStaticEntries; empty leaves the class unset on new entries (requires the CRD backend).")
 }
@@ -135,17 +137,17 @@ type ServiceAccountPruner interface {
 
 // NewClient creates a SPIRE registration client for ztunnel namespace enrollment.
 func NewClient(params params) (SpireClient, error) {
-	if !params.ClientConfig.UseCRD && (params.ClientConfig.CRDParentID != "" || params.ClientConfig.CRDClassName != "") {
-		return nil, fmt.Errorf("SPIRE CRD parent and class overrides require enable-ztunnel-spiffeid-crd")
+	if !params.ClientConfig.HAEnabled && (params.ClientConfig.CRDParentID != "" || params.ClientConfig.CRDClassName != "" || params.ClientConfig.BootstrapEntries != "") {
+		return nil, fmt.Errorf("SPIRE bootstrap entries, CRD parent and class overrides require mesh-auth-spire-ha")
 	}
-	if params.ClientConfig.UseCRD && !params.ZtunnelConfig.UseSpireCA() {
-		return nil, fmt.Errorf("enable-ztunnel-spiffeid-crd requires enable-ztunnel and ztunnel-ca-type=spire")
+	if params.ClientConfig.HAEnabled && !params.ZtunnelConfig.UseSpireCA() {
+		return nil, fmt.Errorf("mesh-auth-spire-ha requires enable-ztunnel and ztunnel-ca-type=spire")
 	}
 	if !params.ZtunnelConfig.UseSpireCA() {
 		return nil, nil
 	}
 
-	if params.ClientConfig.UseCRD {
+	if params.ClientConfig.HAEnabled {
 		client, err := newCRDClient(params)
 		if err != nil {
 			return nil, err

@@ -53,7 +53,7 @@ data:
         }
       }
 
-      {{- if and .Values.encryption.ztunnel.spire.useCRD (not .Values.authentication.mutual.spire.install.server.dataStorage.enabled) }}
+      {{- if and .Values.authentication.mutual.spire.ha.enabled (not .Values.authentication.mutual.spire.install.server.dataStorage.enabled) }}
       KeyManager "memory" {
         plugin_data {}
       }

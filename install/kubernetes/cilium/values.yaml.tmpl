@@ -1215,38 +1215,14 @@ encryption:
       # Cilium's built-in CA and skips the SPIRE enrollment reconciler.
       type: internal
     spire:
-      # -- Register ztunnel identities using ClusterStaticEntry resources instead
-      # of the SPIRE Entry API and grant the operator the required CRD permissions.
-      # Requires encryption.enabled=true, encryption.type=ztunnel,
-      # encryption.ztunnel.ca.type=spire and authentication.mutual.spire.enabled=true.
-      # SPIRE may be chart-managed or external (authentication.mutual.spire.install.enabled=false).
-      # Chart-managed SPIRE includes a controller-manager and bootstrap entries.
-      # The bundled ClusterStaticEntry CRD is installed automatically on a new
-      # release unless authentication.mutual.spire.install.crds.enabled=false.
-      # Existing releases must preinstall the CRD before upgrading. External
-      # SPIRE requires its own controller; set install.crds.enabled=false when
-      # its CRD installation is also managed externally.
-      # Remove --enable-ztunnel-spiffeid-crd from operator.extraArgs and use this value instead.
-      # If RBAC or the operator ServiceAccount is managed externally, provide the
-      # equivalent ClusterStaticEntry permissions outside this chart.
-      useCRD: false
-      # @schema
-      # enum: [legacy, ztunnel]
-      # @schema
-      # -- Bootstrap identity consumers. "legacy" retains the Cilium agent and
-      # operator identities. "ztunnel" requires useCRD and supplies only the
-      # SPIRE agent node alias and ztunnel; select it only when no other consumer
-      # needs the Cilium identities. Shared socket and authorization settings
-      # are retained so bootstrap selection alone does not roll unrelated pods.
-      # External SPIRE must supply the equivalent bootstrap and authorization.
-      bootstrapProfile: legacy
-      # -- Optional workload parent SPIFFE ID in the configured trust domain.
-      # Requires useCRD. Empty retains /ztunnel in the legacy profile; the
-      # ztunnel profile derives the SPIRE agent alias from install.namespace and
-      # install.agent.serviceAccount.name and rejects a different parent.
+      # -- Optional explicit workload parent SPIFFE ID. Requires
+      # authentication.mutual.spire.ha.enabled=true and must equal the agent alias
+      # derived from install.namespace and install.agent.serviceAccount.name.
+      # Empty selects that alias. Non-HA Entry API behavior is unchanged.
       parentID: ""
-      # -- Controller class for operator workload and chart bootstrap entries.
-      # Requires useCRD. Chart-managed SCM watches only this class when nonempty;
+      # -- Controller class for operator workload and bootstrap entries.
+      # Requires authentication.mutual.spire.ha.enabled=true.
+      # Chart-managed SCM watches only this class when nonempty;
       # empty preserves classless defaults. Configure external SCM to match.
       className: ""
       # -- Node-local containerd CRI socket used by ztunnel for delegated PID
@@ -4508,6 +4484,33 @@ authentication:
     spire:
       # -- Enable SPIRE integration (beta)
       enabled: false
+      # @schema
+      # type: object
+      # additionalProperties: false
+      # properties:
+      #   enabled:
+      #     type: boolean
+      #   replicas:
+      #     type: integer
+      #     minimum: 1
+      #     maximum: 2147483647
+      # @schema
+      # -- Operator-owned static registration for independent SPIRE stores.
+      # Requires ztunnel with the SPIRE CA and an enabled Cilium operator.
+      # The elected leader installs the CSE CRD and ensures exactly the agent
+      # node alias and ztunnel before producing namespace/ServiceAccount entries.
+      # authentication.mutual.spire.ha.replicas optionally selects the paired
+      # server/SCM count (default two when enabled, integer 1..2147483647).
+      # Omit replicas when HA or the bundled SPIRE installation is disabled.
+      # Existing Helm-owned bootstraps require an explicit retention/handoff.
+      ha:
+        # -- Enable the HA/static registration feature. Non-HA behavior is unchanged.
+        enabled: false
+        # -- Number of paired SPIRE-server/SCM replicas (integer 1..2147483647).
+        # Defaults to two only when HA is enabled. Omit when HA is disabled;
+        # any explicit value then is an error. Explicit replicas also require
+        # install.enabled=true because external servers cannot be scaled by Helm.
+        # replicas: 2
       # -- Annotations to be added to all top-level spire objects (resources under templates/spire)
       annotations: {}
       # Settings to control the SPIRE installation and configuration
@@ -4522,20 +4525,6 @@ authentication:
         # selected, including the automatic shared root, so uninstall does not
         # indirectly delete it.
         existingNamespace: false
-        # @schema
-        # type: object
-        # properties:
-        #   enabled:
-        #     type: boolean
-        # @schema
-        # -- Bundled ClusterStaticEntry CRD installation. By default this follows
-        # encryption.ztunnel.spire.useCRD, including with external SPIRE. Set
-        # enabled=false to opt out for an externally managed CRD, or enabled=true
-        # to explicitly install the schema. Helm skips existing CRDs without
-        # adopting or updating them and does not upgrade or delete CRDs.
-        # Existing releases must preinstall the CRD before enabling CRD mode.
-        # Omit enabled so Helm can use its fallback dependency condition.
-        crds: {}
         # -- init container image of SPIRE agent and server
         initImage:
           # @schema
@@ -4604,17 +4593,6 @@ authentication:
           # ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
           securityContext: {}
         server:
-          # @schema
-          # type: integer
-          # minimum: 1
-          # maximum: 2147483647
-          # @schema
-          # -- Number of SPIRE server/controller pairs, not database replicas.
-          # More than one requires encryption.ztunnel.spire.useCRD=true,
-          # a ClusterIP Service, and an existing shared root Secret. Each server
-          # uses its own PVC by default. The shared root defaults to the
-          # spire-upstream-ca Secret; ca.upstreamSecret overrides its name.
-          replicas: 1
           # -- The priority class to use for the spire server
           priorityClassName: ""
           # -- SPIRE server image
@@ -4641,7 +4619,7 @@ authentication:
           # SPIRE server service configuration
           # -- container resource limits & requests
           resources: {}
-          # Settings for the sidecar installed when encryption.ztunnel.spire.useCRD=true.
+          # Settings for the sidecar installed when authentication.mutual.spire.ha.enabled=true.
           # Each controller reconciles ClusterStaticEntries into its pod-local server.
           controllerManager:
             # @schema
@@ -4651,7 +4629,7 @@ authentication:
             # -- SPIRE entry ownership prefix. Preserve the existing prefix
             # during adoption; no prefix cleanup is enabled by this chart.
             entryIDPrefix: cilium
-            # -- SPIRE controller-manager image. Keep the bundled CRD compatible
+            # -- SPIRE controller-manager image. Keep the operator's embedded CRD compatible
             # when overriding this image.
             image:
               # @schema
