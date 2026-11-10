@@ -1,8 +1,9 @@
 Operator-produced static registrations
 ======================================
 
-This restoration starts at ``ee72a5dce26a2f1acb96aa8cca8e53d7a31db33e``,
-the preserved ``backup/spire-ha-pre-rebase-20261026`` implementation. The
+The historical restoration starts at
+``ee72a5dce26a2f1acb96aa8cca8e53d7a31db33e``, the preserved
+``backup/spire-ha-pre-rebase-20261026`` implementation. The
 operator watches enrolled Namespaces and ServiceAccounts and writes one
 ``ClusterStaticEntry`` per namespace/SA pair, including unused SAs. It does
 not enumerate Pods to produce those identities.
@@ -21,16 +22,37 @@ on new entries. The direct Entry API backend is unchanged. Ownership and
 namespace-scoped pruning remain enforced by the original producer label,
 namespace label and full namespace/SA identity annotation.
 
+Current verified POC
+--------------------
+
+As verified on November 10, 2026, release ``cilium`` in ``kube-system`` is
+deployed at revision **7**, using the frozen compatibility chart
+``cilium-1.21.0-poc-static.1``. It contains two Helm-owned bootstrap CSEs:
+the SPIRE agent node alias and ztunnel. The six original workload CSEs remain
+owned by ``cilium-operator-ztunnel``, with eight complete registrations on
+each independent SPIRE store. The optional Cilium-agent and operator bootstrap
+CSEs were removed, not left in an ignored class.
+
+The stored Helm values and manifest describe the minimal static profile.
+Cold attestation and permanent-profile issuance, cross-node mTLS, renewal and
+unenrolled identity denial passed; temporary proof resources were cleaned up.
+Implementation provenance remains ``b600f7abdadd95561e26f622085ba1d82fff4449``.
+The running operator remains ``static-6ad602390271``; no runtime images,
+roots, storage, RBAC or unrelated workload configuration were changed.
+
 Do not install this branch's entire historical Helm chart over the running POC.
 Keep the current agent, ztunnel, SPIRE server/agent and standalone SCM images;
-keep roots, Secrets, PVCs and durable image delivery. Keep all four bootstrap
-declarations during restoration; minimizing them is a separate guarded phase.
+keep roots, Secrets, PVCs and durable image delivery. The original restoration
+required all four bootstrap declarations; the separate guarded minimal-profile
+migration is now complete. Do not replay those historical steps against the
+current two-bootstrap release.
 The archived source already includes the same ztunnel SPIFFE trust-domain/xDS
 support as the retained running agent source. No trust-domain backport or
 dataplane downgrade is required.
 
-Build only the generic operator with ``Dockerfile.operator``. It uses pinned
-builder/runtime images and the established local build recipe, avoiding live
+For the historical operator restoration, build only the generic operator with
+``Dockerfile.operator``. It uses pinned builder/runtime images and the
+established local build recipe, avoiding live
 APK/gops installer downloads. Label the image with its exact clean source commit
 and save its full index, amd64 manifest and config-digest chain in an offline
 archive. Do not publish it.
@@ -70,21 +92,29 @@ The full prefix key is
 Its default is ``cilium``. The POC must retain ``cilium-scm-sa-poc-1108`` and
 must not introduce ``entryIDPrefixCleanup``.
 
-For the POC, the desired values are ``bootstrapProfile=ztunnel``,
+The verified POC uses ``bootstrapProfile=ztunnel``,
 ``parentID=spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent`` and
 ``className=cilium-spire``. Both SCM sidecars retain Static reconciliation,
 with Set and Pod reconciliation disabled. Existing binaries suffice; this
 change does not require rebuilding or replacing any image.
 
 The standard chart retains its historical resource names and cluster-qualified
-PSAT selectors. The deployed POC instead has a ``...-spire-agent`` alias name,
-two PSAT selectors, ``spire-server-crd`` resources and operator-created
-bootstrap ownership. Those exact existing names, UIDs and specs must be
-preserved through the compatibility migration below. Rendering the ordinary
-chart is not evidence that it can safely upgrade this release.
+PSAT selectors. The POC retains its ``...-spire-agent`` alias name, two PSAT
+selectors and ``spire-server-crd`` resources. Its four pre-migration bootstraps
+were operator-created; the completed migration adopted only the two required
+bootstraps into Helm while preserving their names, UIDs and specs. Workload
+CSE ownership remains separate. Rendering the ordinary chart is not evidence
+that it can safely upgrade this release.
 
-Offline minimal-profile preparation
------------------------------------
+Original minimal-profile preparation
+-------------------------------------
+
+The following preparation and cutover instructions document the original
+revision-6, restored four-bootstrap input. They are not a recipe to rerun
+against today's revision-7 minimal release. The original migration/recovery
+artifact generator still requires that preserved four-bootstrap baseline;
+do not substitute a two-bootstrap snapshot or recreate optional declarations
+merely to satisfy its input checks.
 
 ``prepare_minimal.py`` consumes a protected, restored four-bootstrap snapshot
 and a read-only release capture. It never contacts Kubernetes, invokes Helm,
@@ -198,14 +228,15 @@ Helm 4 CLI. Do not silently use its automatic/server-side apply mode or force
 conflict resolution. Offline merge verification cannot establish admission,
 fresh attestation, runtime authentication or successful Helm adoption.
 
-Separately gated live migration
-------------------------------
+Original gated minimal-profile migration
+-----------------------------------------
 
-Preparation is not live authorization. The live test worker owns all cluster
-writes until coordinator handoff. Fresh SPIRE-agent attestation and temporary
-pool/resource cleanup are required before rollout. The earlier alias+ztunnel
-proof covered new delegates, fresh issuance, cross-node mTLS and natural
-renewal, but did not by itself establish fresh node attestation.
+This historical revision-6-to-7 sequence is complete. Preparation alone was
+not live authorization: the original cutover required the live test worker's
+handoff, fresh SPIRE-agent attestation and temporary pool/resource cleanup.
+The earlier alias+ztunnel proof alone did not establish fresh node attestation;
+the separate cold-node proof closed that gap before the successful cutover.
+Do not rerun this sequence or reuse its recorded resourceVersions.
 
 1. Recheck the dedicated target, all protected state and original workloads,
    four complete bootstrap specs/UIDs, six workload CSEs, both stores and
@@ -255,12 +286,13 @@ Future general-chart adoption requires a separate complete naming, ownership,
 PSAT-selector, schema and runtime configuration review. Do not treat this
 one migration as proof that an ordinary historical-chart upgrade is safe.
 
-Preparation without cluster writes
-----------------------------------
+Historical restore-overlay preparation
+---------------------------------------
 
-``prepare_restore.py`` reads saved current Deployment, ClusterRole, ConfigMap
-and StatefulSet JSON documents and writes narrowly scoped JSON patches. It
-does not contact Kubernetes or change kubeconfig. Every patch tests the object's
+``prepare_restore.py`` reads saved pre-migration Deployment, ClusterRole,
+ConfigMap and StatefulSet JSON documents from the historical Set-to-Static
+restoration and writes narrowly scoped JSON patches. It does not contact
+Kubernetes or change kubeconfig. Every patch tests the object's
 UID, resourceVersion and the exact fields it replaces. Regenerate from a fresh,
 guarded read if the objects change; do not remove concurrency preconditions.
 
@@ -284,11 +316,13 @@ reconciliation; remove the now-unused generic input allowlist/read permissions;
 and update only the SCM configuration checksum on the existing StatefulSet.
 They must not be applied until the handoff gates below pass.
 
-These are persistent resource overlays, not a rollback of the Helm release.
-The saved Helm values still describe the preceding Set mode. Do not run a
-future Helm upgrade or rollback with those stale values while the restored
-producer is active: integrate the same narrow transformations into the next
-release or deliberately execute the documented reverse handoff first.
+These historical persistent resource overlays changed runtime state without
+aligning the then-current Helm release. The saved pre-migration revision-6
+values still describe the preceding Set mode; the deployed revision-7 values
+and manifest now describe the minimal static profile. Never reuse the archived
+Set values for an upgrade or roll back to revision 6. Neither these overlays
+nor the historical reverse handoff below are a direct recipe for today's
+minimal release.
 
 Historical restoration rollout
 -------------------------------
@@ -328,8 +362,12 @@ the generic Set cannot win their initial creation.
 Historical reverse handoff
 --------------------------
 
-This is a deliberate return to the older Set producer, not recovery for the
-minimal-profile migration. It requires its own separate authorization.
+This historical sequence assumes the restored four-bootstrap baseline. It
+describes a deliberate return to the older Set producer, not recovery for the
+minimal-profile migration and not a direct recipe for today's revision-7
+release. Any such return now needs a separately reviewed registration and
+Helm migration, fresh state guards and its own authorization; it must not use
+a rollback to revision 6.
 
 Retain the same SCM version, prefix, root and four bootstrap declarations.
 Enable Set+Static and its narrow input permissions, restore the saved equivalent
