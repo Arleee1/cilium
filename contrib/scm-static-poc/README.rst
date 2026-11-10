@@ -22,14 +22,16 @@ The elected operator establishes the embedded ClusterStaticEntry CRD, then
 verifies or creates exactly the SPIRE agent alias and ztunnel CSEs before
 releasing workload reconciliation. Matching existing schemas and entries are
 read without rewriting them. Ownership or spec conflicts fail startup.
-The SPIRE installer is independent of ``--skip-crd-creation``; keep that flag
-enabled in this POC so older Cilium source cannot replace newer Cilium schemas.
+The SPIRE installer is independent of ``--skip-crd-creation``. Preserve that
+flag when upgrading an existing mixed-version deployment so older Cilium
+source cannot replace newer Cilium schemas. The clean replacement described
+below instead needed normal Cilium CRD creation on its empty API server.
 
 The chart supplies an exact two-entry JSON bootstrap configuration through
 ``--mesh-auth-spire-bootstrap-entries``. General-chart names and its three
-PSAT selectors remain distinct from the POC's retained names and two selectors.
-The frozen POC handoff must supply its actual names/specs, not regenerate them
-from the general chart. Bootstrap ownership is
+PSAT selectors differ from the historical revision-7 POC's names and two
+selectors. An in-place transfer would need the actual retained names/specs,
+not regenerated general-chart objects. Bootstrap ownership is
 ``cilium-operator-spire-bootstrap``, separate from
 ``cilium-operator-ztunnel`` workload ownership and pruning.
 
@@ -39,14 +41,111 @@ the new HA keys. There are no aliases or conflicting enable switches.
 The old ``--enable-ztunnel-spiffeid-crd`` flag is removed. Parent/class values
 remain supported, with the HA workload parent required to equal the agent alias.
 
-For the Helm-to-operator transfer, first record ``helm.sh/resource-policy: keep``
-in both stored and live bootstrap manifests with a retention-only upgrade.
-Then remove the two CSEs from Helm's manifest without deleting them, transfer
-only guarded ownership metadata, and roll the operator with their exact specs.
-Verify UID/spec and complete registration preservation at every stage.
-Never rely only on a live ownership-label change, edit release Secrets, delete
-the CSE CRD, or replay the four-bootstrap historical restoration below.
-Any recovery is a bounded forward transaction against the actual latest state.
+The proposed revision-8/9/10 Helm-to-operator transfer was not approved or
+executed. The user chose a clean, replacement-first rebuild with new trust
+instead. The isolated Helm 4 retention test remains relevant to any future
+in-place migration: retention must first be recorded in the stored manifest,
+not merely added to the live object. Never edit release Secrets or replay the
+four-bootstrap historical restoration below against the replacement.
+
+Verified operator-owned replacement
+-----------------------------------
+
+On November 10, 2026, the actual source chart from
+``436dab5db17c7d7052f2f0657dc7b177c0727175`` was installed into
+``aks-eermovick-scm-ha-1110`` in ``rg-eermovick-scm-sa-poc-1108``.
+The replacement has three Ready ``Standard_D4s_v5`` nodes, Kubernetes 1.34.11,
+and two paired SPIRE-server/SCM replicas. Release ``cilium`` in ``kube-system``
+is revision **2**, chart ``cilium-1.21.0-dev``, with stored apply method ``csa``
+and these authoritative settings:
+
+.. code-block:: yaml
+
+   authentication:
+     mutual:
+       spire:
+         ha:
+           enabled: true
+           replicas: 2
+
+The source chart archive SHA256 is
+``04bf000bb14d3dd4e33d0eb101c3bf6505b42fcc1ff51d9019cb13e6a3806491``.
+Its stored templates, files, schema and values were checked against the
+prepared source package. Its manifest contains no CRD or bootstrap CSE.
+The operator created the previously absent ClusterStaticEntry CRD and both
+bootstraps. The embedded CRD file SHA256 is
+``bca6486a5fad0f9882f0172a31eb9d476a5e8f0da305021e36cd923473c47c82``.
+
+The running operator is
+``localhost/scm-sa-poc/operator-generic:ha-436dab5db17c`` with image index
+``sha256:0e055e42ef65992cb24ab5046984a82edf0884f7ebdd86183badc632ed7ab8ce``.
+The Cilium agent remains ``localhost/scm-sa-poc/cilium:939b4bcac392`` and SCM
+remains ``localhost/scm-sa-poc/spire-controller-manager:set-only-89e371c7306b``.
+The initial source-chart install used its historical ztunnel 1.0.0 and SPIRE
+1.15.3 defaults. A forward, same-chart revision-2 upgrade restored the retained
+runtime pins before behavioral acceptance:
+
+* ztunnel ``v1.1.0``:
+  ``sha256:f712b1b809b9888b410629bd6b4c36f5e91978771de8991d82d8792840f477d5``.
+* SPIRE agent ``1.15.5``:
+  ``sha256:3652c732b0f0d36f4dd78394230a1b1cd0ddcc29548a46c67a996b1a78c14481``.
+* SPIRE server ``1.15.5``:
+  ``sha256:584a9c5cc95b9457f5033e7e4488d603fffe5ec48a80c4dba14b05c5e1c2c384``.
+
+SCM logs confirm Static reconciliation only, with Set, Pod and federation
+reconciliation false. The omitted fork-only Set field defaults to false in
+the explicit reconciliation struct in source ``89e371c``; the ordinary chart
+does not inject an unsupported fork-only field into upstream configurations.
+The class is ``cilium-spire`` and the configured prefix is
+``cilium-scm-ha-1110`` (the loader appends the dot).
+
+The source-chart alias CSE is
+``cilium-spire-kube-system-cilium-agent``. Despite its name, its SPIFFE ID is
+``spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent``: the SPIRE agent node
+alias, not the optional Cilium-agent workload identity. It uses three PSAT
+selectors, including ``k8s_psat:cluster:scm-ha-poc-1110``. The other bootstrap
+is ``cilium-spire-kube-system-cilium-ztunnel``. Both are operator-owned, not
+Helm-owned.
+
+The new root fingerprint is
+``3C614E0B0540267999292635E2E6A166379B6059494AF912350F2E2E03221CFF``.
+This was an authorized clean reset, not continuity of the old root,
+registrations, CSE UIDs or workload UIDs. After establishing the new baseline,
+one elected-operator restart preserved all eight complete registrations in
+each store, bootstrap/CRD identities, trust, storage and unrelated Pods, with
+zero bootstrap recreations. Cross-node mTLS, delegated and cached identities,
+unenrolled identity denial and renewal passed. The renewal proof used explicit
+two-minute TTLs on two disposable proof entries only; it did not test default
+TTLs, server failover or node failover.
+
+The replacement intentionally retains a reproducible demo:
+``sa-poc-a`` and ``sa-poc-b`` each have ``default``, ``app`` and ``unused``
+accounts. Each active account has two Ready Pods; unused accounts have none.
+All six accounts registered before any workload Pods existed. The unenrolled
+``sa-poc-control`` namespace adds four comparison Pods and no registrations.
+Thus twelve demo/control Pods coexist with two bootstrap plus six workload
+CSEs and eight entries per store. The separate proof namespaces, two observers,
+image staging and node-inspection Pods were removed, not relabeled as demo
+resources.
+
+The old dedicated AKS, its managed node resource group, obsolete private
+endpoint/NIC and DNS VNet link were retired only after replacement acceptance.
+The shared encrypted account/share and archive data were retained. All nine
+archive SHA256 values and TLS NFS loopback mounts were rechecked on all three
+replacement nodes after retirement. The protected original cluster still has
+five Ready nodes and its ``delete`` CanNotDelete lock.
+
+Use the new dedicated ``scm-ha-poc-1110`` context and
+``scm-ha-poc-1110.config``, not the retired ``scm-sa-poc-1108`` target.
+The replacement endpoint is
+``https://aks-eermovick-scm-ha-1110-zctqcjyg.hcp.austriaeast.azmk8s.io:443``;
+its kube-system UID is ``970d622f-9039-418e-abb0-0b5e894ac678``.
+The main kubeconfig remains byte-identical with its original selected context;
+neither its POC aliases nor the old dedicated config were retargeted.
+The non-secret final handoff contains exact target guards, the 15 demo input
+objects and ``show-demo.ps1``. That replay only reads existing state and,
+optionally, sends ordinary requests between existing demo Pods. It does not
+rerun acceptance, restart leaders or modify Kubernetes resources.
 
 Historical restoration
 -----------------------
@@ -68,27 +167,27 @@ namespace label and full namespace/SA identity annotation.
 Pre-change verified POC
 -----------------------
 
-As verified on November 10, 2026, release ``cilium`` in ``kube-system`` is
-deployed at revision **7**, using the frozen compatibility chart
-``cilium-1.21.0-poc-static.1``. It contains two Helm-owned bootstrap CSEs:
-the SPIRE agent node alias and ztunnel. The six original workload CSEs remain
+Before the clean rebuild on November 10, 2026, release ``cilium`` in
+``kube-system`` was deployed at revision **7**, using the frozen compatibility chart
+``cilium-1.21.0-poc-static.1``. It contained two Helm-owned bootstrap CSEs:
+the SPIRE agent node alias and ztunnel. The six original workload CSEs remained
 owned by ``cilium-operator-ztunnel``, with eight complete registrations on
 each independent SPIRE store. The optional Cilium-agent and operator bootstrap
 CSEs were removed, not left in an ignored class.
 
-The stored Helm values and manifest describe the minimal static profile.
+The stored revision-7 Helm values and manifest described the minimal static
+profile.
 Cold attestation and permanent-profile issuance, cross-node mTLS, renewal and
 unenrolled identity denial passed; temporary proof resources were cleaned up.
-Implementation provenance remains ``b600f7abdadd95561e26f622085ba1d82fff4449``.
-The running operator remains ``static-6ad602390271``; no runtime images,
-roots, storage, RBAC or unrelated workload configuration were changed.
+Implementation provenance was ``b600f7abdadd95561e26f622085ba1d82fff4449``.
+The operator was ``static-6ad602390271``; that earlier minimal-profile migration
+did not change runtime images, roots, storage, RBAC or unrelated workloads.
 
-Do not install this branch's entire historical Helm chart over the running POC.
-Keep the current agent, ztunnel, SPIRE server/agent and standalone SCM images;
-keep roots, Secrets, PVCs and durable image delivery. The original restoration
-required all four bootstrap declarations; the separate guarded minimal-profile
-migration is now complete. Do not replay those historical steps against the
-current two-bootstrap release.
+The historical chart was not a safe in-place upgrade of that frozen release.
+Its roots, Secrets, PVCs and image pins had to be preserved during the
+minimal-profile migration. The original restoration required all four
+bootstrap declarations. Both historical operations are complete; neither is
+a recipe for the operator-owned replacement.
 The archived source already includes the same ztunnel SPIFFE trust-domain/xDS
 support as the retained running agent source. No trust-domain backport or
 dataplane downgrade is required.
@@ -158,8 +257,8 @@ Original minimal-profile preparation
 
 The following preparation and cutover instructions document the original
 revision-6, restored four-bootstrap input. They are not a recipe to rerun
-against today's revision-7 minimal release. The original migration/recovery
-artifact generator still requires that preserved four-bootstrap baseline;
+against the revision-7 minimal release or the clean replacement. The original
+migration/recovery artifact generator still requires that four-bootstrap baseline;
 do not substitute a two-bootstrap snapshot or recreate optional declarations
 merely to satisfy its input checks.
 
@@ -365,11 +464,10 @@ They must not be applied until the handoff gates below pass.
 
 These historical persistent resource overlays changed runtime state without
 aligning the then-current Helm release. The saved pre-migration revision-6
-values still describe the preceding Set mode; the deployed revision-7 values
-and manifest now describe the minimal static profile. Never reuse the archived
+values still describe the preceding Set mode; the historical revision-7 values
+and manifest describe the minimal static profile. Never reuse the archived
 Set values for an upgrade or roll back to revision 6. Neither these overlays
-nor the historical reverse handoff below are a direct recipe for today's
-minimal release.
+nor the historical reverse handoff below are a recipe for the replacement.
 
 Historical restoration rollout
 -------------------------------
@@ -411,8 +509,8 @@ Historical reverse handoff
 
 This historical sequence assumes the restored four-bootstrap baseline. It
 describes a deliberate return to the older Set producer, not recovery for the
-minimal-profile migration and not a direct recipe for today's revision-7
-release. Any such return now needs a separately reviewed registration and
+minimal-profile migration and not a recipe for the operator-owned replacement.
+Any such return needs a separately reviewed registration and
 Helm migration, fresh state guards and its own authorization; it must not use
 a rollback to revision 6.
 
