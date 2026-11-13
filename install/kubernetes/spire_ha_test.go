@@ -56,11 +56,11 @@ func TestSpireHABootstrapWiring(t *testing.T) {
 				entries := spireBootstrapEntries(t, rendered)
 				require.Len(t, entries, 2)
 				expected := map[string]map[string]any{
-					"cilium-spire-kube-system-cilium-agent": {
+					"spire-bootstrap-agent": {
 						"spiffeID": alias, "parentID": "spiffe://workload.test/spire/server",
 						"selectors": []any{"k8s_psat:cluster:default", "k8s_psat:agent_ns:identity-system", "k8s_psat:agent_sa:agent-custom"},
 					},
-					"cilium-spire-kube-system-cilium-ztunnel": {
+					"spire-bootstrap-ztunnel": {
 						"spiffeID": "spiffe://workload.test/ztunnel", "parentID": alias,
 						"selectors": []any{"k8s:ns:kube-system", "k8s:sa:ztunnel-cilium"},
 					},
@@ -69,6 +69,7 @@ func TestSpireHABootstrapWiring(t *testing.T) {
 					if class != "" {
 						spec["className"] = class
 					}
+					require.Contains(t, entries, name)
 					require.Equal(t, spec, entries[name].Object["spec"])
 				}
 				operator := spireManifest[appsv1.Deployment](t, rendered, "cilium/templates/cilium-operator/deployment.yaml")
@@ -97,6 +98,16 @@ func TestSpireHABootstrapWiring(t *testing.T) {
 		"encryption.ztunnel.spire.parentID=spiffe://spiffe.cilium/ns/cilium-spire/sa/spire-agent")
 	require.NoError(t, err)
 	require.Len(t, spireBootstrapEntries(t, rendered), 2)
+
+	rendered, err = renderZtunnelSpire(t, managedSpireCRD,
+		"namespaceOverride=cilium-custom,serviceAccounts.ztunnel.name=ztunnel-custom")
+	require.NoError(t, err)
+	entries := spireBootstrapEntries(t, rendered)
+	require.Len(t, entries, 2)
+	require.Contains(t, entries, "spire-bootstrap-agent")
+	require.Contains(t, entries, "spire-bootstrap-ztunnel")
+	require.Equal(t, []any{"k8s:ns:cilium-custom", "k8s:sa:ztunnel-custom"},
+		entries["spire-bootstrap-ztunnel"].Object["spec"].(map[string]any)["selectors"])
 }
 
 func TestSpireUpgradeRegistrationScope(t *testing.T) {

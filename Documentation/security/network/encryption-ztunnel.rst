@@ -285,8 +285,12 @@ not turn general Cilium CRD creation back on.
 
 The chart no longer installs CRDs or bootstrap CSEs. A missing CSE CRD is
 handled on either installation or upgrade, without Helm API-capability
-overrides. The leader checks both bootstrap objects before creating missing
-ones. Existing objects must have the exact expected specs and
+overrides. The chart configures the cluster-scoped names
+``spire-bootstrap-agent`` and ``spire-bootstrap-ztunnel``. These identify the
+SPIRE agent node alias and ztunnel bootstrap, respectively; changing their
+resource names does not change SPIFFE identities, parents or selectors.
+The leader checks both bootstrap objects before creating missing ones.
+Existing objects must have the exact expected specs and
 ``app.kubernetes.io/managed-by=cilium-operator-spire-bootstrap``, with no Helm
 ownership annotations or owner references. Matching objects are not updated;
 UIDs, status, finalizers and unrelated metadata survive repeated leader
@@ -294,6 +298,22 @@ startups. Conflicts and RBAC failures fail startup explicitly. Known transient
 API failures and creation races are retried within bounded startup waits.
 Readiness here means persisted bootstrap intent, not convergence in every
 SPIRE store.
+
+Older charts configured release-qualified names such as
+``cilium-spire-kube-system-cilium-agent`` and
+``cilium-spire-kube-system-cilium-ztunnel``. Kubernetes cannot rename an object
+in place, and the operator does not automatically delete obsolete bootstrap
+names. Plan an explicit overlap handoff: first create the new operator-owned
+declarations with identical specs and unchanged SCM class/prefix, then retire
+only the verified old names after all operator replicas use the new names.
+Confirm the deployed Static reconciler groups equivalent declarations by
+SPIFFE ID, parent and selectors and preserves the existing registration ID.
+During overlap one declaration may be reported as masked; this is not a
+second registration. Verify complete registrations in every store before
+and after guarded old-object deletion. Do not delete the old declarations
+first or treat a CSE status written by one SCM as proof for every store.
+The replacement CSEs necessarily have new UIDs; workload CSE names and
+registration intent remain unchanged.
 
 Operator-created ServiceAccount resources remain owned by
 ``cilium-operator-ztunnel`` and are not Helm-managed. The default controller

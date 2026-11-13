@@ -29,11 +29,11 @@ func testBootstrapConfig(t *testing.T, domain, class string) ClientConfig {
 	t.Helper()
 	alias := "spiffe://" + domain + "/ns/cilium-spire/sa/spire-agent"
 	entries := []bootstrapEntry{
-		{Name: "cilium-spire-kube-system-cilium-spire-agent", Spec: bootstrapEntrySpec{
+		{Name: "spire-bootstrap-agent", Spec: bootstrapEntrySpec{
 			SPIFFEID: alias, ParentID: "spiffe://" + domain + "/spire/server",
 			Selectors: []string{"k8s_psat:agent_ns:cilium-spire", "k8s_psat:agent_sa:spire-agent"}, ClassName: class,
 		}},
-		{Name: "cilium-spire-kube-system-cilium-ztunnel", Spec: bootstrapEntrySpec{
+		{Name: "spire-bootstrap-ztunnel", Spec: bootstrapEntrySpec{
 			SPIFFEID: "spiffe://" + domain + "/ztunnel", ParentID: alias,
 			Selectors: []string{"k8s:ns:kube-system", "k8s:sa:ztunnel-cilium"}, ClassName: class,
 		}},
@@ -112,8 +112,8 @@ func TestHAStartupCreatesCRDBeforeBootstrapAndWorkloads(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{
-		"cilium-spire-kube-system-cilium-spire-agent",
-		"cilium-spire-kube-system-cilium-ztunnel",
+		"spire-bootstrap-agent",
+		"spire-bootstrap-ztunnel",
 		"ztunnel-shop.unused",
 	}, created)
 	var crdCreates int
@@ -304,12 +304,12 @@ func TestBootstrapConfigValidation(t *testing.T) {
 		"", "null", "[]", "{}", cfg.BootstrapEntries + " []",
 		strings.Replace(cfg.BootstrapEntries, `"name":`, `"unknown":true,"name":`, 1),
 		strings.Replace(cfg.BootstrapEntries, `"spiffeID":`, `"admin":true,"spiffeID":`, 1),
-		strings.Replace(cfg.BootstrapEntries, "cilium-spire-kube-system-cilium-spire-agent", "Bad_Name", 1),
+		strings.Replace(cfg.BootstrapEntries, "spire-bootstrap-agent", "Bad_Name", 1),
 		strings.Replace(cfg.BootstrapEntries, "spiffe://spiffe.cilium/spire/server", "spiffe://other.test/spire/server", 1),
 		strings.ReplaceAll(cfg.BootstrapEntries, "spiffe://spiffe.cilium", "spiffe://other.test"),
 		strings.Replace(cfg.BootstrapEntries, "k8s_psat:agent_ns:cilium-spire", "k8s_psat:cluster:other", 1),
 		strings.Replace(cfg.BootstrapEntries, "k8s:sa:ztunnel-cilium", "k8s:pod-name:ztunnel", 1),
-		strings.Replace(cfg.BootstrapEntries, "cilium-spire-kube-system-cilium-ztunnel", "cilium-spire-kube-system-cilium-spire-agent", 1),
+		strings.Replace(cfg.BootstrapEntries, "spire-bootstrap-ztunnel", "spire-bootstrap-agent", 1),
 		strings.Replace(cfg.BootstrapEntries, `"className":"cilium-spire"`, `"className":"other"`, 1),
 	} {
 		t.Run(bad, func(t *testing.T) {

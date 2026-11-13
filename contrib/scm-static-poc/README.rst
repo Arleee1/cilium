@@ -28,12 +28,23 @@ source cannot replace newer Cilium schemas. The clean replacement described
 below instead needed normal Cilium CRD creation on its empty API server.
 
 The chart supplies an exact two-entry JSON bootstrap configuration through
-``--mesh-auth-spire-bootstrap-entries``. General-chart names and its three
-PSAT selectors differ from the historical revision-7 POC's names and two
+``--mesh-auth-spire-bootstrap-entries``. Its current resource names are
+``spire-bootstrap-agent`` and ``spire-bootstrap-ztunnel``. The agent entry is
+the SPIRE node alias, not an optional Cilium-agent workload identity.
+The three PSAT selectors differ from the historical revision-7 POC's two
 selectors. An in-place transfer would need the actual retained names/specs,
 not regenerated general-chart objects. Bootstrap ownership is
 ``cilium-operator-spire-bootstrap``, separate from
 ``cilium-operator-ztunnel`` workload ownership and pruning.
+
+The bootstrap-name change does not rename existing Kubernetes objects or
+automatically prune their old names. Upgrade with overlapping, identical
+declarations, verify that the deployed Static reconciler preserves complete
+registrations and their IDs in every store, and remove only the guarded old
+CSEs after all operator replicas use the new names. Workload CSE names,
+SPIFFE IDs, parents, selectors, class and ownership prefix must not change.
+The November 10 receipt below records the old names actually deployed then;
+it is historical evidence, not proof that this later rename is live.
 
 Legacy ``useCRD``, ``bootstrapProfile``, ``install.server.replicas`` and
 ``install.crds`` values are rejected even when disabled. Remove them and use

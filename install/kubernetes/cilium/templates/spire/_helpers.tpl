@@ -54,13 +54,13 @@ spire-upstream-ca
 {{- $trustDomain := .Values.authentication.mutual.spire.trustDomain -}}
 {{- $agentID := include "cilium.spire.agentID" . -}}
 {{- $entries := list
-  (dict "name" (printf "cilium-spire-%s-%s-agent" (include "cilium.namespace" .) .Release.Name) "spec" (dict
+  (dict "name" "spire-bootstrap-agent" "spec" (dict
     "spiffeID" $agentID "parentID" (printf "spiffe://%s/spire/server" $trustDomain)
     "selectors" (list
       (printf "k8s_psat:cluster:%s" .Values.cluster.name)
       (printf "k8s_psat:agent_ns:%s" .Values.authentication.mutual.spire.install.namespace)
       (printf "k8s_psat:agent_sa:%s" .Values.authentication.mutual.spire.install.agent.serviceAccount.name))))
-  (dict "name" (printf "cilium-spire-%s-%s-ztunnel" (include "cilium.namespace" .) .Release.Name) "spec" (dict
+  (dict "name" "spire-bootstrap-ztunnel" "spec" (dict
     "spiffeID" (printf "spiffe://%s/ztunnel" $trustDomain) "parentID" $agentID
     "selectors" (list
       (printf "k8s:ns:%s" (include "cilium.namespace" .))
